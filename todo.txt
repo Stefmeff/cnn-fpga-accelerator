@@ -1,7 +1,6 @@
 Questions about Project:
 
 - Read paper
-- get familiar with running code (make, inference benchmarks, flags for execution)
 
 make → builds default (CPU mode)
 ./inference t → test mode (correctness check)
