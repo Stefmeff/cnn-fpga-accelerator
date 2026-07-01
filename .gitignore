@@ -1,2 +1,4 @@
 
 data/cifar10_testset.dat
+build/
+inference.exe
