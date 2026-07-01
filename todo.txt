@@ -1,0 +1,25 @@
+Questions about Project:
+
+- Read paper
+- get familiar with running code (make, inference benchmarks, flags for execution)
+
+make → builds default (CPU mode)
+./inference t → test mode (correctness check)
+./inference b 100 → benchmark 100 images
+./inference p images/plane.bmp → predict single image
+
+
+- Implement a single layer and test Implement => testing of single layer unit (e.g conv2d, maxpool) with kernel.cpp reference implementation
+
+
+
+- Folder structure:
+-hls/
+    - top unit and folders for every component
+    -conv2d/
+        -testbenches and source code, tcl files to automate vitis workflow
+    -relu/
+    -etc.
+
+
+- look at different algorithms/ways of implementing (FFT,)
