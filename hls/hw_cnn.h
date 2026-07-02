@@ -3,8 +3,19 @@
 
 #include "stdint.h"
 
-// Simple top-level kernel declaration for Vitis HLS.
-// Keep signature compatible with host example: krnl(xin,wbuf,bbuf,zout)
-extern "C" void convEngine(float *xin, float *wbuf, float *bbuf, float *zout);
+/**
+ * @brief Kernel function for the CNN accelerator.
+ * 
+ * @param xin Input feature map (image 3x32x32)
+ * @param wbuf weights 
+ * @param bbuf biases
+ * @param zout Output feature map 
+ */
+void convEngine(
+    float *xin, 
+    float *wbuf, 
+    float *bbuf, 
+    float *zout
+);
 
 #endif
