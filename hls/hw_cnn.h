@@ -1,3 +1,10 @@
+/**
+ * @file hw_cnn.h
+ * @author Stefan Moser
+ * @brief Top-level interface for the CNN accelerator kernel.
+ * 
+ */
+
 #ifndef HW_CNN_H
 #define HW_CNN_H
 
