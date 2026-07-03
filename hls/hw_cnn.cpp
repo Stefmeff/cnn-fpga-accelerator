@@ -41,7 +41,7 @@ static const LayerParams CNN_Layers[N_LAYERS] = {
 
 /**
  * @brief Copies n floats from off-chip DRAM (src) into an on-chip buffer (dst).
- * Two elements per iteration.
+ * Two elements per iteration, convert to respective data type T.
  */
 template<typename T>
 static void load_dram(const float* src, T* dst, int n) {

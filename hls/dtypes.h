@@ -7,14 +7,26 @@
 #ifndef DTYPES_H
 #define DTYPES_H
 
-//#define USE_FIXED_POINT
+#define USE_FIXED_POINT
+
+// Fixed-point width sweep. ap_fixed<W, I>: W total bits, I integer bits (incl.
+// sign), W-I fractional. Start at 16-bit with generous integer bits to avoid
+// clipping; narrow toward 8-bit once accuracy is confirmed against float.
+#ifndef FP_ACT_W
+  #define FP_ACT_W 16
+  #define FP_ACT_I 8      // activations: range ~ +/-128
+  #define FP_W_W   16
+  #define FP_W_I   4      // weights: range ~ +/-8
+  #define FP_ACC_W 32
+  #define FP_ACC_I 16     // accumulator: wide, avoids overflow over Cin*9 sum
+#endif
 
 #ifdef USE_FIXED_POINT
     #include <ap_fixed.h>
-    typedef ap_fixed<16, 8>  act_t;    // activations / feature maps   (widths TBD)
-    typedef ap_fixed<16, 2>  weight_t; // weights
-    typedef ap_fixed<16, 8>  bias_t;   // biases
-    typedef ap_fixed<32,16>  acc_t;    // accumulator — WIDER, avoids overflow
+    typedef ap_fixed<FP_ACT_W, FP_ACT_I>  act_t;    // activations / feature maps
+    typedef ap_fixed<FP_W_W,   FP_W_I>    weight_t; // weights
+    typedef ap_fixed<FP_ACT_W, FP_ACT_I>  bias_t;   // biases (same range as act)
+    typedef ap_fixed<FP_ACC_W, FP_ACC_I>  acc_t;    // accumulator — WIDER, avoids overflow
 #else
 
     typedef float act_t;

@@ -29,10 +29,10 @@
  * Pure convolution — no activation. Exposed as the reusable conv core.
  */
 void conv2d_core(
-        const float x[],
-        const float w[],
-        const float b[],
-        float z[],
+        const act_t x[],
+        const weight_t w[],
+        const bias_t b[],
+        act_t z[],
         int Cin,
         int Cout,
         int H,
@@ -43,29 +43,29 @@ void conv2d_core(
         for (int oy = 0; oy < H; oy++) {
             for (int ox = 0; ox < W; ox++) {
 
-                // add bias to acc
-                float acc = b[oc];
+                // add bias to acc (wide accumulator type avoids overflow)
+                acc_t acc = b[oc];
 
                 // loop over input channels and kernel positions
                 for (int ic = 0; ic < Cin; ic++) {
                     for (int ky = 0; ky < KSIZE; ky++) {
                         for (int kx = 0; kx < KSIZE; kx++) {
-                        
-                            int iy = oy + ky - 1;   
+
+                            int iy = oy + ky - 1;
                             int ix = ox + kx - 1;
 
                             if (iy < 0 || iy >= H || ix < 0 || ix >= W)
                                 continue;
 
-                    
-                            float xv = x[(ic * H + iy) * W + ix];   // input value
-                            float wv = w[((oc * Cin + ic) * KSIZE + ky) * KSIZE + kx]; //weight
+
+                            act_t    xv = x[(ic * H + iy) * W + ix];   // input value
+                            weight_t wv = w[((oc * Cin + ic) * KSIZE + ky) * KSIZE + kx]; //weight
                             acc += xv * wv; // accumulate
                         }
                     }
                 }
-                // write output
-                z[(oc * H + oy) * W + ox] = acc;
+                // write output (requantize accumulator back to activation type)
+                z[(oc * H + oy) * W + ox] = (act_t)acc;
             }
         }
     }
@@ -73,10 +73,10 @@ void conv2d_core(
 
 
 void conv2d_hls(
-        const float x[],
-        const float w[],
-        const float b[],
-        float z[],
+        const act_t x[],
+        const weight_t w[],
+        const bias_t b[],
+        act_t z[],
         int Cin,
         int Cout,
         int H,

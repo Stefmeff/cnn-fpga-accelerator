@@ -4,6 +4,9 @@ UTILDIR=utils
 HLSDIR=hls
 CONVDIR=hls/conv2d
 
+# Fall back to the default install path if XILINX_VITIS isn't set in the shell
+# (needed so the CPU build can find ap_fixed.h when USE_FIXED_POINT is on).
+XILINX_VITIS ?= C:/AMDDesignTools/2025.2/Vitis
 VITIS_INC=$(XILINX_VITIS)/include
 XILINX_XRT=/usr/include/xrt/
 
@@ -24,7 +27,8 @@ FLAGS= -I$(SRCDIR) -I$(UTILDIR) -I$(HLSDIR) -I$(CONVDIR)
 
 # Flags for SW Development
 #FLAGS +=  -I$(VITIS_INC) -g -O0 -fsanitize=address 
-FLAGS += -I$(VITIS_INC) -g -O0
+
+FLAGS += -I$(VITIS_INC) -O2
 # Flags for the board
 #FLAGS += -std=c++17 -I${XILINX_XRT} -O3
 #LD_FLAGS = -lxrt_coreutil -pthread -lbload

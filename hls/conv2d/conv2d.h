@@ -1,6 +1,7 @@
 #ifndef HLS_CONV2D_H
 #define HLS_CONV2D_H
 
+#include "dtypes.h"   // act_t / weight_t / bias_t / acc_t
 
 //dimensions derived from utils/nets.h and cifar10 dataset:
 
@@ -27,10 +28,10 @@
  * @param W Width of input feature map
  */
 void conv2d_hls(
-        const float x[],
-        const float w[],
-        const float b[],
-        float z[],
+        const act_t x[],
+        const weight_t w[],
+        const bias_t b[],
+        act_t z[],
         int Cin,
         int Cout,
         int H,
@@ -43,10 +44,10 @@ void conv2d_hls(
  * separate step by the caller. Reused by conv2d_hls and the top-level convEngine.
  */
 void conv2d_core(
-        const float x[],
-        const float w[],
-        const float b[],
-        float z[],
+        const act_t x[],
+        const weight_t w[],
+        const bias_t b[],
+        act_t z[],
         int Cin,
         int Cout,
         int H,
