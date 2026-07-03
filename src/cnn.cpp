@@ -1,7 +1,10 @@
 #include "cnn.h"
+#include "../hls/hw_cnn.h"
 #ifdef _WIN32
 #include <chrono>
 #endif
+
+#define HLS
 
 namespace ml {
 
@@ -90,25 +93,37 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 {
 #ifdef HLS
 	int w_total,b_total;
-	FLOAT * w_all = genSeqConvWeights(&w_total);
+	FLOAT * w_all = genSeqConvWeights(&w_total);   // conv weights only
 	FLOAT * b_all = genSeqConvBias(&b_total);
+
+	CNN_layer_struct * lin = &layers[41];          // LINEAR layer (run in software)
+
+	FLOAT zout[64];                                // 64 global-average-pool features
+	Tensor avg(64, 1, 1);
+	Tensor logits(1, 1, 10);
+	Tensor probs(1, 1, 10);
 
 	for(int iter = 0; iter < N; iter++){
 		Tensor * X = &(input[iter]);
-		/* Insert your Board Code here */
 
+		// --- hardware: conv / relu / pool through global average pooling ---
+		convEngine(X->data[0][0], w_all, b_all, zout);
 
-		X = layers[42].Z;
-		/* Store your output in tensor X->data[0][0] */
-		/* Get the max value from tensor */
-		float max = 0;
+		// --- software: linear classifier + softmax on the 64 pooled features ---
+		memcpy(avg.data[0][0], zout, sizeof(FLOAT) * 64);
+		Linear(&avg, lin->W, lin->B, &logits);
+		Softmax(&logits, &probs);
+
+		// mirror the result into the network's output tensor so test_net can
+		// compare it against the golden reference -> drives csim pass/fail
+		memcpy(layers[42].Z->data[0][0], probs.data[0][0], sizeof(FLOAT) * 10);
+
+		// argmax over the 10 class scores (softmax preserves ordering)
+		float max = probs.data[0][0][0];
 		uint8_t pred = 0;
-		for(int k = 0; k < X->size[2]; k++){
-			const float v = (*X)[0][0][k];
-			if(v > max){
-				pred =k;
-				max = v;
-			}
+		for(int k = 1; k < 10; k++){
+			const float v = probs.data[0][0][k];
+			if(v > max){ max = v; pred = (uint8_t)k; }
 		}
 		preds[iter] = pred;
 	}
