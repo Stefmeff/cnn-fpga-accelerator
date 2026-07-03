@@ -46,20 +46,29 @@ void conv2d_core(
                 // add bias to acc (wide accumulator type avoids overflow)
                 acc_t acc = b[oc];
 
-                // loop over input channels and kernel positions
+                // Reduction over input channels. Pipeline this loop (the innermost
+                // VARIABLE-bound loop) and fully unroll the constant 3x3 kernel
+                // taps below it into a parallel multiply/add tree.
                 for (int ic = 0; ic < Cin; ic++) {
+                    // No hard II=1: let HLS register the 9-MAC adder tree across
+                    // pipeline stages to meet the clock (II=1 forced the whole
+                    // tree into one 13.5ns cycle and violated timing).
+                    #pragma HLS PIPELINE
+                    #pragma HLS LOOP_TRIPCOUNT min=3 max=64
+
                     for (int ky = 0; ky < KSIZE; ky++) {
+                        #pragma HLS UNROLL
                         for (int kx = 0; kx < KSIZE; kx++) {
+                            #pragma HLS UNROLL
 
                             int iy = oy + ky - 1;
                             int ix = ox + kx - 1;
 
-                            if (iy < 0 || iy >= H || ix < 0 || ix >= W)
-                                continue;
-
-
-                            act_t    xv = x[(ic * H + iy) * W + ix];   // input value
-                            weight_t wv = w[((oc * Cin + ic) * KSIZE + ky) * KSIZE + kx]; //weight
+                            // zero-pad borders with a mask instead of `continue`
+                            // (control-flow breaks prevent unrolling/pipelining)
+                            bool valid = (iy >= 0 && iy < H && ix >= 0 && ix < W);
+                            act_t    xv = valid ? x[(ic * H + iy) * W + ix] : (act_t)0;
+                            weight_t wv = w[((oc * Cin + ic) * KSIZE + ky) * KSIZE + kx];
                             acc += xv * wv; // accumulate
                         }
                     }
