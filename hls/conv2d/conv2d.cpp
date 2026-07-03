@@ -25,10 +25,10 @@
 
 
 /**
- * @brief Baseline implementation of 3x3 convolution operation on the input feature map, with 
- * stride 1 and 0 padding. 
+ * @brief Baseline implementation of 3x3 convolution (stride 1, zero pad).
+ * Pure convolution — no activation. Exposed as the reusable conv core.
  */
-static void conv2d_baseline(
+void conv2d_core(
         const float x[],
         const float w[],
         const float b[],
@@ -98,5 +98,5 @@ void conv2d_hls(
 #pragma HLS INTERFACE s_axilite port=W    bundle=control
 #pragma HLS INTERFACE s_axilite port=return bundle=control
 
-    conv2d_baseline(x, w, b, z, Cin, Cout, H, W);
+    conv2d_core(x, w, b, z, Cin, Cout, H, W);
 }

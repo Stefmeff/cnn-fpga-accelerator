@@ -9,14 +9,6 @@
 
 //#define USE_FIXED_POINT
 
-#define ACT_MAX 16384      //maximum size of output feature map (16×32×32)
-#define WEIGHTS_MAX 36864    // 64×64×9
-#define BIAS_MAX 64
-
-#define IMAGE_MAX 3072
-
-
-
 #ifdef USE_FIXED_POINT
     #include <ap_fixed.h>
     typedef ap_fixed<16, 8>  act_t;    // activations / feature maps   (widths TBD)

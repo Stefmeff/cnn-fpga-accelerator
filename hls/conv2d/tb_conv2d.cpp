@@ -79,7 +79,7 @@ static int run_case(const Case &c)
     Tensor B(1, 1, c.Cout);
     B.randomize(-1.0f, 1.0f);
 
-    //Add padding and run regerence
+    //Add padding and run reference
     Tensor Zref(c.Cout, c.H, c.W);
     Tensor *Xp = padTensor(&X, 1);
     conv2d(Xp, Wt, &B, &Zref);

@@ -11,7 +11,13 @@
 
 using namespace ml;
 
-const char * PRJ_PATH = "./";
+// Project root used to locate the data/ files. Vitis csim runs from a deep
+// build directory, so this must be absolute. Override with -DPRJ_ROOT=... if the
+// project moves (an absolute path also works fine for the plain `make` build).
+#ifndef PRJ_ROOT
+#define PRJ_ROOT "C:/Users/stefa/tum-master/SS2026/MasterPraktikum/project/cnn_fpga_accelerator/"
+#endif
+const char * PRJ_PATH = PRJ_ROOT;
 
 
 int test_net( CNN * net,const char * data_file);

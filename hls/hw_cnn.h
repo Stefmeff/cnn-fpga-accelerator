@@ -14,6 +14,7 @@
 #define WEIGHTS_MAX 36864    // 64×64×9
 #define BIAS_MAX 64
 
+#define IMAGE_MAX 3072
 
 /**
  * @brief Kernel function for the CNN accelerator.

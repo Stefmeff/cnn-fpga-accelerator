@@ -27,13 +27,29 @@
  * @param W Width of input feature map
  */
 void conv2d_hls(
-        const float x[],        
-        const float w[],       
-        const float b[],        
-        float z[],             
-        int Cin,               
-        int Cout,              
-        int H,                  
-        int W              
+        const float x[],
+        const float w[],
+        const float b[],
+        float z[],
+        int Cin,
+        int Cout,
+        int H,
+        int W
+);
+
+/**
+ * @brief Interface-agnostic 3x3 convolution core (stride 1, pad 1) operating on
+ * flat on-chip buffers. Pure convolution (no activation) — ReLU is applied as a
+ * separate step by the caller. Reused by conv2d_hls and the top-level convEngine.
+ */
+void conv2d_core(
+        const float x[],
+        const float w[],
+        const float b[],
+        float z[],
+        int Cin,
+        int Cout,
+        int H,
+        int W
 );
 #endif // HLS_CONV2D_H
