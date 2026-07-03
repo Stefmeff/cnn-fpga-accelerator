@@ -10,6 +10,11 @@
 
 #include "stdint.h"
 
+#define ACT_MAX 16384      //maximum size of output feature map (16×32×32)
+#define WEIGHTS_MAX 36864    // 64×64×9
+#define BIAS_MAX 64
+
+
 /**
  * @brief Kernel function for the CNN accelerator.
  * 
