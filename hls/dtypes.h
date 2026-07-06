@@ -9,16 +9,14 @@
 
 #define USE_FIXED_POINT
 
-// Fixed-point width sweep. ap_fixed<W, I>: W total bits, I integer bits (incl.
-// sign), W-I fractional. Start at 16-bit with generous integer bits to avoid
-// clipping; narrow toward 8-bit once accuracy is confirmed against float.
+
 #ifndef FP_ACT_W
   #define FP_ACT_W 16
-  #define FP_ACT_I 8      // activations: range ~ +/-128
+  #define FP_ACT_I 8      
   #define FP_W_W   16
-  #define FP_W_I   4      // weights: range ~ +/-8
+  #define FP_W_I   4      
   #define FP_ACC_W 32
-  #define FP_ACC_I 16     // accumulator: wide, avoids overflow over Cin*9 sum
+  #define FP_ACC_I 16    
 #endif
 
 #ifdef USE_FIXED_POINT

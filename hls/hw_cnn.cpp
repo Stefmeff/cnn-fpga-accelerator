@@ -2,45 +2,46 @@
 #include "dtypes.h"
 #include "conv2d/conv2d.h"
 
-#define N_LAYERS 43
+#define N_LAYERS 24
 
-enum Layer_t { CONV, RELU, MAXPOOL, AVGPOOL, LINEAR, SOFTMAX };
+enum Layer_t { CONV, MAXPOOL, AVGPOOL, LINEAR, SOFTMAX };
 
 struct LayerParams {
     Layer_t type;
     int Cin, Cout, H, W;
 };
 
+// ReLU is fused into each conv's output write, so it has no own layer entry.
 static const LayerParams CNN_Layers[N_LAYERS] = {
-    {CONV, 3, 16, 32, 32},  {RELU, 16, 16, 32, 32},
-    {CONV, 16, 16, 32, 32}, {RELU, 16, 16, 32, 32},
-    {CONV, 16, 16, 32, 32}, {RELU, 16, 16, 32, 32},
-    {CONV, 16, 16, 32, 32}, {RELU, 16, 16, 32, 32},
-    {CONV, 16, 16, 32, 32}, {RELU, 16, 16, 32, 32},
-    {CONV, 16, 16, 32, 32}, {RELU, 16, 16, 32, 32},
-    {CONV, 16, 16, 32, 32}, {RELU, 16, 16, 32, 32},
-    {MAXPOOL, 16, 16, 32, 32},                        
-    {CONV, 16, 32, 16, 16}, {RELU, 32, 32, 16, 16},
-    {CONV, 32, 32, 16, 16}, {RELU, 32, 32, 16, 16},
-    {CONV, 32, 32, 16, 16}, {RELU, 32, 32, 16, 16},
-    {CONV, 32, 32, 16, 16}, {RELU, 32, 32, 16, 16},
-    {CONV, 32, 32, 16, 16}, {RELU, 32, 32, 16, 16},
-    {CONV, 32, 32, 16, 16}, {RELU, 32, 32, 16, 16},
-    {MAXPOOL, 32, 32, 16, 16},                        
-    {CONV, 32, 64, 8, 8},   {RELU, 64, 64, 8, 8},
-    {CONV, 64, 64, 8, 8},   {RELU, 64, 64, 8, 8},
-    {CONV, 64, 64, 8, 8},   {RELU, 64, 64, 8, 8},
-    {CONV, 64, 64, 8, 8},   {RELU, 64, 64, 8, 8},
-    {CONV, 64, 64, 8, 8},   {RELU, 64, 64, 8, 8},
-    {CONV, 64, 64, 8, 8},   {RELU, 64, 64, 8, 8},
-    {AVGPOOL, 64, 64, 8, 8},                          
+    {CONV, 3, 16, 32, 32},
+    {CONV, 16, 16, 32, 32},
+    {CONV, 16, 16, 32, 32},
+    {CONV, 16, 16, 32, 32},
+    {CONV, 16, 16, 32, 32},
+    {CONV, 16, 16, 32, 32},
+    {CONV, 16, 16, 32, 32},
+    {MAXPOOL, 16, 16, 32, 32},
+    {CONV, 16, 32, 16, 16},
+    {CONV, 32, 32, 16, 16},
+    {CONV, 32, 32, 16, 16},
+    {CONV, 32, 32, 16, 16},
+    {CONV, 32, 32, 16, 16},
+    {CONV, 32, 32, 16, 16},
+    {MAXPOOL, 32, 32, 16, 16},
+    {CONV, 32, 64, 8, 8},
+    {CONV, 64, 64, 8, 8},
+    {CONV, 64, 64, 8, 8},
+    {CONV, 64, 64, 8, 8},
+    {CONV, 64, 64, 8, 8},
+    {CONV, 64, 64, 8, 8},
+    {AVGPOOL, 64, 64, 8, 8},
     {LINEAR, 64, 10, 1, 1},
     {SOFTMAX, 10, 10, 1, 1},
 };
 
 
 /**
- * @brief Copies n floats from off-chip DRAM (src) into an on-chip buffer (dst).
+ * @brief Copies n floats from off-chip DRAM (src) into an on-chip BRAM(dst).
  * Two elements per iteration, convert to respective data type T.
  */
 template<typename T>
@@ -70,19 +71,7 @@ static void store_dram(const T* src, float* dst, int n) {
         dst[n-1] = (float)src[n-1];
 }
 
-/**
- * @brief In-place ReLU over n activations: x = max(x, 0). Own layer state.
- */
-static void relu_core(act_t* x, int n) {
-    for (int i = 0; i < n; i++) {
-        #pragma HLS PIPELINE II=1
-        if (x[i] < (act_t)0) x[i] = (act_t)0;
-    }
-}
 
-/**
- * @brief 2x2 stride-2 max pooling. Input C x H x W -> output C x H/2 x W/2.
- */
 static void maxpool_core(const act_t* in, act_t* out, int C, int H, int W) {
     int Ho = H >> 1, Wo = W >> 1;
     for (int c = 0; c < C; c++)
@@ -99,23 +88,16 @@ static void maxpool_core(const act_t* in, act_t* out, int C, int H, int W) {
             }
 }
 
-/**
- * @brief Global average pooling. Input C x H x W -> output C x 1 x 1.
- */
 static void avgpool_core(const act_t* in, act_t* out, int C, int H, int W) {
     int n = H * W;
     for (int c = 0; c < C; c++) {
         acc_t s = 0;
         for (int i = 0; i < n; i++)
             s += in[c*n + i];
-        out[c] = (act_t)(s / n);
+        act_t v = (act_t)(s / n);
+        out[c] = v;
     }
 }
-
-// NOTE: LINEAR + SOFTMAX are performed in software on the host (see
-// CNN::inference). The kernel produces the 64 global-average-pool features;
-// the tiny classifier runs on the ARM core, so linear weights never need to be
-// streamed to the PL.
 
 
 void convEngine(
@@ -129,7 +111,7 @@ void convEngine(
 #pragma HLS INTERFACE m_axi port=xin  offset=slave bundle=gmem0 depth=3072
 #pragma HLS INTERFACE m_axi port=wbuf offset=slave bundle=gmem1 depth=267696
 #pragma HLS INTERFACE m_axi port=bbuf offset=slave bundle=gmem2 depth=688
-#pragma HLS INTERFACE m_axi port=zout offset=slave bundle=gmem3 depth=16384
+#pragma HLS INTERFACE m_axi port=zout offset=slave bundle=gmem3 depth=64
 
 #pragma HLS INTERFACE s_axilite port=xin  bundle=control
 #pragma HLS INTERFACE s_axilite port=wbuf bundle=control
@@ -155,48 +137,45 @@ void convEngine(
     int w_off = 0, b_off = 0;
     int out_size = IMAGE_MAX; // element count of the current feature map
 
-    // ---- layer state machine (rolled loop -> one time-shared engine) ----
     for (int L = 0; L < N_LAYERS; L++) {
         LayerParams lp = CNN_Layers[L];
         switch (lp.type) {
 
         case CONV: {
             //number of weights for this layer
-            int wn = lp.Cout * lp.Cin * 9;  
+            int wn = lp.Cout * lp.Cin * 9;
 
             //load weights and biases from DRAM
             load_dram<weight_t>(wbuf + w_off, weights_buf, wn);
             load_dram<bias_t>(bbuf + b_off, bias_buf, lp.Cout);
 
-            //compute the convolution for this layer
+            //every conv in rnet20 is followed by ReLU -> always fuse it on write
             conv2d_core(cur, weights_buf, bias_buf, nxt,
-                        lp.Cin, lp.Cout, lp.H, lp.W);
+                        lp.Cin, lp.Cout, lp.H, lp.W, true);
 
             //increment offsets for next layer's weights/biases
             w_off += wn;
             b_off += lp.Cout;
-            
+
             //update the output size and swap ping-pong buffers
             out_size = lp.Cout * lp.H * lp.W;
             { act_t* t = cur; cur = nxt; nxt = t; }   // ping-pong swap
             break;
         }
 
-        case RELU:
-            relu_core(cur, lp.Cout * lp.H * lp.W);     // in place, no swap
-            break;
-
-        case MAXPOOL:
+        case MAXPOOL: {
             maxpool_core(cur, nxt, lp.Cin, lp.H, lp.W);
             out_size = lp.Cin * (lp.H >> 1) * (lp.W >> 1);
             { act_t* t = cur; cur = nxt; nxt = t; }
             break;
+        }
 
-        case AVGPOOL:
+        case AVGPOOL: {
             avgpool_core(cur, nxt, lp.Cin, lp.H, lp.W);
             out_size = lp.Cin;
             { act_t* t = cur; cur = nxt; nxt = t; }
             break;
+        }
 
         case LINEAR:
         case SOFTMAX:

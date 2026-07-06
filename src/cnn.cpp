@@ -1,10 +1,24 @@
+
 #include "cnn.h"
-#include "../hls/hw_cnn.h"
+
+#ifdef BOARD
+#include <xrt.h>
+#include "bitLoad.h"
+#endif
+
+#ifdef HLS
+#include "../hls/hw_cnn.h"   
+#define HLS                  
+#endif
+
 #ifdef _WIN32
 #include <chrono>
 #endif
 
-#define HLS
+
+#ifndef XCLBIN_PATH
+#define XCLBIN_PATH "./convEngine.xclbin"
+#endif
 
 namespace ml {
 
@@ -106,16 +120,14 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 	for(int iter = 0; iter < N; iter++){
 		Tensor * X = &(input[iter]);
 
-		// --- hardware: conv / relu / pool through global average pooling ---
+		
 		convEngine(X->data[0][0], w_all, b_all, zout);
 
-		// --- software: linear classifier + softmax on the 64 pooled features ---
+
 		memcpy(avg.data[0][0], zout, sizeof(FLOAT) * 64);
 		Linear(&avg, lin->W, lin->B, &logits);
 		Softmax(&logits, &probs);
 
-		// mirror the result into the network's output tensor so test_net can
-		// compare it against the golden reference -> drives csim pass/fail
 		memcpy(layers[42].Z->data[0][0], probs.data[0][0], sizeof(FLOAT) * 10);
 
 		// argmax over the 10 class scores (softmax preserves ordering)
@@ -130,30 +142,90 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 	delete [] w_all;
 	delete [] b_all;
 #elif defined BOARD
+	//generate weights and biase into flattened array
 	int w_total,b_total;
-	FLOAT * w_all = genSeqConvWeights(&w_total);
-	FLOAT * b_all = genSeqConvBias(&b_total);
+	FLOAT * w_all = genSeqConvWeights(&w_total);   // all conv weights, contiguous
+	FLOAT * b_all = genSeqConvBias(&b_total);      // all conv biases,  contiguous
 
+	//load the FPGA bitstream and create the kernel object
+	auto device = xrt::device(0);
+	auto xclbin_uuid = device.load_xclbin(XCLBIN_PATH);
+	loadBitstream(XCLBIN_PATH);                    // program the PL (helper from the edge-detection lab)
+	auto krnl = xrt::kernel(device, xclbin_uuid, "convEngine",
+	                        xrt::kernel::cu_access_mode::exclusive);
+
+	//initialize buffers for fmap, weights, biases, and output
+	auto xin  = xrt::bo(device, sizeof(float) * 3 * 32 * 32, krnl.group_id(0));
+	auto wbuf = xrt::bo(device, sizeof(float) * w_total,     krnl.group_id(1));
+	auto bbuf = xrt::bo(device, sizeof(float) * b_total,     krnl.group_id(2));
+	auto zout = xrt::bo(device, sizeof(float) * 64,          krnl.group_id(3));
+
+	auto start = mtick();
+
+	//write weight and biases to buffer
+	wbuf.write(w_all);
+	double w_time = mtock(start);
+
+	start = mtick();
+	bbuf.write(b_all);
+	double b_time = mtock(start);
+	printf("---------------------------\n");
+	printf("Weights write time[ms]: %lf\n",w_time);
+	printf("Biases write time[ms]: %lf\n",b_time);
+
+
+	CNN_layer_struct * lin = &layers[41];          
+	Tensor avg(64, 1, 1);                         
+	Tensor logits(1, 1, 10);
+	Tensor probs(1, 1, 10);
+
+	start = mtick();
 	for(int iter = 0; iter < N; iter++){
+		//write inpput tensor to buffer
+		double start2 = mtick();
 		Tensor * X = &(input[iter]);
-		/* Insert your Board Code here */
+		xin.write(X->data[0][0]);
+		double i_write = mtock(start2);
 
 
+		//run and measure kernel execution time
+		start2 = mtick();
+		auto run = krnl(xin, wbuf, bbuf, zout);    // start kernel with all 4 args
+		run.wait();                                // block until the IP is done
+		double kernel_time = mtock(start2);
 
-		X = layers[42].Z;
-		/* Store your output in tensor X->data[0][0] */
-		/* Get the max value from tensor */
-		float max = 0;
+		start2 = mtick();
+		zout.read(avg.data[0][0]);
+		double o_read = mtock(start2);
+
+		start2 = mtick();
+		Linear(&avg, lin->W, lin->B, &logits);
+		Softmax(&logits, &probs);
+		double linear_softmax_time = mtock(start2);
+
+		memcpy(layers[42].Z->data[0][0], probs.data[0][0], sizeof(FLOAT) * 10);
+
+		start2 = mtick();
+		float max = probs.data[0][0][0];
 		uint8_t pred = 0;
-		for(int k = 0; k < X->size[2]; k++){
-			const float v = (*X)[0][0][k];
-			if(v > max){
-				pred =k;
-				max = v;
-			}
+		for(int k = 1; k < 10; k++){
+			const float v = probs.data[0][0][k];
+			if(v > max){ max = v; pred = (uint8_t)k; }
 		}
 		preds[iter] = pred;
+		double pred_time = mtock(start2);
+
+		printf("---------------------------\n");
+		printf("IMAGE NUMBER: %d\n",iter);
+		printf("Image write time[ms]: %lf\n",i_write);
+		printf("Kernel time[ms]: %lf\n",kernel_time);
+		printf("Output read time[ms]: %lf\n",o_read);
+		printf("Linear + Softmax time[ms]: %lf\n",linear_softmax_time);
+		printf("Argmax time[ms]: %lf\n",pred_time);
+		printf("---------------------------\n");
 	}
+	double total_time = mtock(start);
+	printf("Total inference time[ms]: %lf\n",total_time);
 	delete [] w_all;
 	delete [] b_all;
 #else

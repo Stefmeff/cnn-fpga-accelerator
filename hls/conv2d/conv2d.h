@@ -14,6 +14,13 @@
 #define CONV_MAX_W     (CONV_MAX_COUT * CONV_MAX_CIN * 9)     // max amount of weights
 #define KSIZE 3
 
+
+// T output channels computed in parallel from the same input window.
+// T must divid the CNNs Cout dims (16/32/64) => 1,2,4,8,16
+#ifndef COUT_TILE
+  #define COUT_TILE 8
+#endif
+
 /**
  * @brief Performs a 3x3 convolution operation on the input feature map, with 
  * stride 1 and 0 padding.
@@ -38,11 +45,7 @@ void conv2d_hls(
         int W
 );
 
-/**
- * @brief Interface-agnostic 3x3 convolution core (stride 1, pad 1) operating on
- * flat on-chip buffers. Pure convolution (no activation) — ReLU is applied as a
- * separate step by the caller. Reused by conv2d_hls and the top-level convEngine.
- */
+
 void conv2d_core(
         const act_t x[],
         const weight_t w[],
@@ -51,6 +54,7 @@ void conv2d_core(
         int Cin,
         int Cout,
         int H,
-        int W
+        int W,
+        bool relu = false
 );
 #endif // HLS_CONV2D_H

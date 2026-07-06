@@ -23,11 +23,118 @@
  */
 
 
+static void conv2d_weight_stationary(
+        const act_t x[], 
+        const weight_t w[], 
+        const bias_t b[], 
+        act_t z[],
+        int Cin, 
+        int Cout, 
+        int H, 
+        int W,
+        bool relu)
+{
+    
+    acc_t oacc[COUT_TILE][CONV_MAX_PIX];
+    #pragma HLS ARRAY_PARTITION variable=oacc complete dim=1
 
-/**
- * @brief Baseline implementation of 3x3 convolution (stride 1, zero pad).
- * Pure convolution — no activation. Exposed as the reusable conv core.
- */
+    //loop over output channels in tiles of COUT_TILE
+    for (int oc0 = 0; oc0 < Cout; oc0 += COUT_TILE) {
+        #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_COUT/COUT_TILE
+
+        for (int ic = 0; ic < Cin; ic++) {
+            #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_CIN
+
+            //store input channel's 3x3 kernel for each of the T output channels in registers
+            weight_t kernel[COUT_TILE][KSIZE][KSIZE];
+            #pragma HLS ARRAY_PARTITION variable=kernel complete dim=0
+
+            //read the T kernels for this input channel into registers (reused across whole input map)
+            for (int t = 0; t < COUT_TILE; t++)
+                for (int ky = 0; ky < KSIZE; ky++)
+                    for (int kx = 0; kx < KSIZE; kx++)
+                        #pragma HLS UNROLL
+                        kernel[t][ky][kx] = w[(((oc0 + t) * Cin + ic) * KSIZE + ky) * KSIZE + kx];
+
+
+            //store 3 rows of input channel in a line buffer (shift register) for acces accross T tiles of output channels.
+            act_t row[KSIZE][CONV_MAX_DIM];
+            #pragma HLS ARRAY_PARTITION variable=row complete dim=0
+
+            //initialize the line buffer with pad + first two rows of input
+            for (int c = 0; c < W; c++) {
+                #pragma HLS PIPELINE II=1
+                #pragma HLS LOOP_TRIPCOUNT min=8 max=CONV_MAX_DIM
+                row[0][c] = (act_t)0;                                       // row -1 (pad)
+                row[1][c] =            x[(ic * H + 0) * W + c];             // row 0
+                row[2][c] = (1 < H) ? x[(ic * H + 1) * W + c] : (act_t)0;   // row 1
+            }
+
+            //slide the 3x3 window across the input feature map
+            for (int oy = 0; oy < H; oy++) {
+                #pragma HLS LOOP_TRIPCOUNT min=8 max=CONV_MAX_DIM
+
+                //input row streamed in during this pass, feeding the next output row
+                int next = oy + 2;
+
+                //slide the 3x3 window across the row
+                for (int ox = 0; ox < W; ox++) {
+                    #pragma HLS PIPELINE II=1
+                    #pragma HLS LOOP_TRIPCOUNT min=8 max=32
+
+                    //comput accross T output channels in parallel
+                    for (int t = 0; t < COUT_TILE; t++) {
+                        #pragma HLS UNROLL
+                        acc_t psum = 0;
+
+                        //parallel multiply-accumulate for this unit's 3x3 window
+                        for (int ky = 0; ky < KSIZE; ky++) {
+                            #pragma HLS UNROLL
+                            for (int kx = 0; kx < KSIZE; kx++) {
+                                #pragma HLS UNROLL
+                                int ix = ox + kx - 1;
+                                act_t xv = (ix >= 0 && ix < W) ? row[ky][ix] : (act_t)0;
+                                psum += xv * kernel[t][ky][kx];
+                            }
+                        }
+
+                        //either add bias for the first input channel or accumulate with previous input channels
+                        acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][oy * W + ox];
+                        oacc[t][oy * W + ox] = prev + psum;
+                    }
+
+
+                    if (ox >= 1) {
+                        int c = ox - 1;
+                        row[0][c] = row[1][c];
+                        row[1][c] = row[2][c];
+                        row[2][c] = (next < H) ? x[(ic * H + next) * W + c] : (act_t)0;
+                    }
+                }
+
+                {
+                    int c = W - 1;
+                    row[0][c] = row[1][c];
+                    row[1][c] = row[2][c];
+                    row[2][c] = (next < H) ? x[(ic * H + next) * W + c] : (act_t)0;
+                }
+            }
+        }
+
+        //write accumulated results to output (include relu)
+        for (int t = 0; t < COUT_TILE; t++) {
+            for (int i = 0; i < H * W; i++) {
+                #pragma HLS PIPELINE II=1
+                #pragma HLS LOOP_TRIPCOUNT min=64 max=1024
+                acc_t v = oacc[t][i];
+                if (relu && v < (acc_t)0) v = (acc_t)0;   // fused ReLU
+                z[(oc0 + t) * H * W + i] = (act_t)v;
+            }
+        }
+    }
+}
+
+/** Dispatch to the dataflow variant selected by CONV_DATAFLOW (see conv2d.h). */
 void conv2d_core(
         const act_t x[],
         const weight_t w[],
@@ -36,48 +143,11 @@ void conv2d_core(
         int Cin,
         int Cout,
         int H,
-        int W)
+        int W,
+        bool relu)
 {
-    // Loop over output channels, height, and width
-    for (int oc = 0; oc < Cout; oc++) {
-        for (int oy = 0; oy < H; oy++) {
-            for (int ox = 0; ox < W; ox++) {
-
-                // add bias to acc (wide accumulator type avoids overflow)
-                acc_t acc = b[oc];
-
-                // Reduction over input channels. Pipeline this loop (the innermost
-                // VARIABLE-bound loop) and fully unroll the constant 3x3 kernel
-                // taps below it into a parallel multiply/add tree.
-                for (int ic = 0; ic < Cin; ic++) {
-                    // No hard II=1: let HLS register the 9-MAC adder tree across
-                    // pipeline stages to meet the clock (II=1 forced the whole
-                    // tree into one 13.5ns cycle and violated timing).
-                    #pragma HLS PIPELINE
-                    #pragma HLS LOOP_TRIPCOUNT min=3 max=64
-
-                    for (int ky = 0; ky < KSIZE; ky++) {
-                        #pragma HLS UNROLL
-                        for (int kx = 0; kx < KSIZE; kx++) {
-                            #pragma HLS UNROLL
-
-                            int iy = oy + ky - 1;
-                            int ix = ox + kx - 1;
-
-                            // zero-pad borders with a mask instead of `continue`
-                            // (control-flow breaks prevent unrolling/pipelining)
-                            bool valid = (iy >= 0 && iy < H && ix >= 0 && ix < W);
-                            act_t    xv = valid ? x[(ic * H + iy) * W + ix] : (act_t)0;
-                            weight_t wv = w[((oc * Cin + ic) * KSIZE + ky) * KSIZE + kx];
-                            acc += xv * wv; // accumulate
-                        }
-                    }
-                }
-                // write output (requantize accumulator back to activation type)
-                z[(oc * H + oy) * W + ox] = (act_t)acc;
-            }
-        }
-    }
+    //Change version in here:
+    conv2d_weight_stationary(x, w, b, z, Cin, Cout, H, W, relu);
 }
 
 

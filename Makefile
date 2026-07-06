@@ -17,21 +17,25 @@ OBJS=$(patsubst $(UTILDIR)/%.cpp,$(OBJDIR)/%.o,$(USRCS))
 SRCS= $(wildcard $(SRCDIR)/*.cpp)
 OBJS += $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SRCS))
 
-HLS_SRCS= $(wildcard $(HLSDIR)/*.cpp)
-OBJS += $(patsubst $(HLSDIR)/%.cpp,$(OBJDIR)/%.o,$(HLS_SRCS))
-
-# conv2d lives in a subdirectory of hls/, add it explicitly
-OBJS += $(OBJDIR)/conv2d.o
-
 FLAGS= -I$(SRCDIR) -I$(UTILDIR) -I$(HLSDIR) -I$(CONVDIR)
 
-# Flags for SW Development
-#FLAGS +=  -I$(VITIS_INC) -g -O0 -fsanitize=address 
-
+ifdef BOARD
+# ===== FPGA host build (run on the Pynq board): `make BOARD=1` =====
+# The convEngine kernel lives in the .xclbin, so the HLS sources (hw_cnn.cpp,
+# conv2d.cpp) are NOT compiled here — they need ap_fixed/Vitis headers the board
+# doesn't have. The host talks to the PL through XRT.
+FLAGS += -std=c++17 -I$(XILINX_XRT) -O3 -DBOARD
+LD_FLAGS = -lxrt_coreutil -pthread -lbload
+else
+# ===== CPU build (HLS C-model, default): plain `make` =====
+HLS_SRCS= $(wildcard $(HLSDIR)/*.cpp)
+OBJS += $(patsubst $(HLSDIR)/%.cpp,$(OBJDIR)/%.o,$(HLS_SRCS))
+# conv2d lives in a subdirectory of hls/, add it explicitly
+OBJS += $(OBJDIR)/conv2d.o
 FLAGS += -I$(VITIS_INC) -O2
-# Flags for the board
-#FLAGS += -std=c++17 -I${XILINX_XRT} -O3
-#LD_FLAGS = -lxrt_coreutil -pthread -lbload
+# Flags for SW Development
+#FLAGS +=  -I$(VITIS_INC) -g -O0 -fsanitize=address
+endif
 
 
 TRG=inference
