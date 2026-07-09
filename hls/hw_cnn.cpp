@@ -72,6 +72,14 @@ static void store_dram(const T* src, float* dst, int n) {
         dst[n-1] = (float)src[n-1];
 }
 
+/**
+ * @brief Streams weights from DRAM to a fifo. 
+ * Two elements per iteration, convert to weight_t.
+ * 
+ * @param src off-chip DRAM
+ * @param ws FIFO stream for weights
+ * @param n number of weights to stream
+ */
 static void stream_weights(const float* src, hls::stream<weight_t>& ws, int n) {
     int pairs = n >> 1;
     for (int i = 0; i < pairs; i++) {
@@ -83,29 +91,49 @@ static void stream_weights(const float* src, hls::stream<weight_t>& ws, int n) {
         ws.write((weight_t)src[n-1]);
 }
 
-static void conv_layer(const float* wsrc, const act_t* x, const bias_t* b,
+/**
+ * @brief Performs a convolution layer (+RELU) with the given parameters.
+ * 
+ * @param w pointer to weights in DRAM
+ * @param x pointer to input feature map in BRAM
+ * @param b pointer to biases in BRAM
+ * @param z pointer to output feature map in BRAM
+ * @param Cin number of input channels
+ * @param Cout number of output channels
+ */
+static void conv_layer(const act_t* x, const float* w, const bias_t* b,
                        act_t* z, int Cin, int Cout, int H, int W) {
     #pragma HLS DATAFLOW
     hls::stream<weight_t> weight_fifo;
     #pragma HLS STREAM variable=weight_fifo depth=256
-    stream_weights(wsrc, weight_fifo, Cout * Cin * 9);
+    stream_weights(w, weight_fifo, Cout * Cin * 9);
     conv2d_core(x, weight_fifo, b, z, Cin, Cout, H, W);
 }
 
 
-static void maxpool_core(const act_t* in, act_t* out, int C, int H, int W) {
+static void maxpool_core(const act_t* in, act_t* out, int Cin, int H, int W) {
     int Ho = H >> 1, Wo = W >> 1;
-    for (int c = 0; c < C; c++)
-        for (int oy = 0; oy < Ho; oy++)
-            for (int ox = 0; ox < Wo; ox++) {
-                int iy = oy << 1, ix = ox << 1;
-                act_t m = in[(c*H + iy)*W + ix];
-                for (int dy = 0; dy < 2; dy++)
-                    for (int dx = 0; dx < 2; dx++) {
-                        act_t v = in[(c*H + iy + dy)*W + ix + dx];
-                        if (v > m) m = v;
-                    }
-                out[(c*Ho + oy)*Wo + ox] = m;
+
+    act_t row_max[CONV_MAX_DIM>>1];
+
+    for (int c = 0; c < Cin; c++)
+        #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_CIN
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x += 2) {
+                #pragma HLS PIPELINE II=1
+                act_t elem1 = in[(c*H + y)*W + x];
+                act_t elem2 = in[(c*H + y)*W + x + 1];
+                act_t m = (elem1 > elem2) ? elem1 : elem2;
+                
+                if(y & 1) {
+                    int oy = y >> 1;
+                    int ox = x >> 1;
+                    act_t prev = row_max[ox];
+                    act_t maxv = (m > prev) ? m : prev;
+                    out[(c*Ho + oy)*Wo + ox] = maxv;
+                } else {
+                    row_max[x>>1] = m;
+                }
             }
 }
 
@@ -169,7 +197,7 @@ void convEngine(
             load_dram<bias_t>(bbuf + b_off, bias_buf, lp.Cout);
 
             //every conv in rnet20 is followed by ReLU -> always fuse it on write
-            conv_layer(wbuf + w_off, cur, bias_buf, nxt,
+            conv_layer(cur, wbuf + w_off, bias_buf, nxt,
                        lp.Cin, lp.Cout, lp.H, lp.W);
 
             //increment offsets for next layer's weights/biases

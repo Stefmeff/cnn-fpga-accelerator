@@ -30,7 +30,7 @@ static void conv2d_weight_stationary(
     //initialize LUTRAM for accumulated outputs of COUT_TILE output channels
     acc_t oacc[COUT_TILE][CONV_MAX_PIX];
     #pragma HLS ARRAY_PARTITION variable=oacc complete dim=1
-    #pragma HLS BIND_STORAGE variable=oacc type=ram_2p impl=lutram
+    #pragma HLS BIND_STORAGE variable=oacc type=ram_2p impl=bram
 
 
     for (int oc0 = 0; oc0 < Cout; oc0 += COUT_TILE) {
@@ -101,8 +101,10 @@ static void conv2d_weight_stationary(
                             #pragma HLS UNROLL
                             int ix = ox + kx - 1;
                             act_t xv = (ix >= 0 && ix < W) ? window[ky][kx] : (act_t)0;
-                            
-                            psum += xv * kernel[t][ky][kx];
+
+                            auto prod = xv * kernel[t][ky][kx];
+                            #pragma HLS BIND_OP variable=prod op=mul impl=dsp
+                            psum += prod;
                         }
                     }
                     
