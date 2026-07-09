@@ -19,7 +19,7 @@
 
 
 #ifndef XCLBIN_PATH
-#define XCLBIN_PATH "./convEngine.xclbin"
+#define XCLBIN_PATH "./kernel/convEngine2.xclbin"
 #endif
 
 namespace ml {
@@ -153,7 +153,7 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 	auto device = xrt::device(0);
 	auto xclbin_uuid = device.load_xclbin(XCLBIN_PATH);
 	loadBitstream(XCLBIN_PATH);                    // program the PL (helper from the edge-detection lab)
-	auto krnl = xrt::kernel(device, xclbin_uuid, "convEngine",
+	auto krnl = xrt::kernel(device, xclbin_uuid, "convEngine2",
 	                        xrt::kernel::cu_access_mode::exclusive);
 
 	//initialize buffers for fmap, weights, biases, and output
