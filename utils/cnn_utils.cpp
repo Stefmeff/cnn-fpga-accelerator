@@ -1,4 +1,5 @@
 #include "cnn.h"
+#include "../hls/hw_cnn.h"
 
 namespace ml {
 
@@ -233,6 +234,48 @@ FLOAT * CNN::genSeqConvWeights(int * w_total)
 				w_off += lay->input_channels*9;
 			}
 		}
+	}
+	return w_all;
+}
+
+// Change weight streaming order => optimized for weight-stationary apporach
+//Conv weights in convEngine consumption order: per layer, oc0-tile -> ic -> t -> ky -> kx.
+FLOAT * CNN::genSeqConvWeightsWS(int * w_total)
+{
+	const int T = COUT_TILE;
+
+	*w_total = 0;
+	for(int i = 0; i < layers.size(); i++){
+		CNN_layer_struct * lay = &(layers[i]);
+		if(lay->type == Layer_Type::Conv)
+			*w_total += lay->output_size[0]*lay->input_channels*9;
+	}
+
+	printf("Allocating %d floats (WS order, T=%d)!\n",*w_total,T);
+	FLOAT * w_all = new FLOAT[*w_total];
+	if(w_all == NULL){
+		printf("ERROR: Failed Allocation!\n");
+		return 0;
+	}
+
+	int w_off = 0;
+	for(int i = 0; i < layers.size(); i++){
+		CNN_layer_struct * lay = &(layers[i]);
+		if(lay->type != Layer_Type::Conv) continue;
+
+		const int Cin  = lay->input_channels;
+		const int Cout = lay->output_size[0];
+		if(Cout % T != 0)
+			printf("WARNING: layer %d Cout=%d not divisible by COUT_TILE=%d!\n",i,Cout,T);
+
+		for(int oc0 = 0; oc0 < Cout; oc0 += T)
+			for(int ic = 0; ic < Cin; ic++)
+				for(int t = 0; t < T; t++){
+					int oc = oc0 + t;
+					for(int ky = 0; ky < 3; ky++)
+						for(int kx = 0; kx < 3; kx++)
+							w_all[w_off++] = lay->W[oc].data[ic][ky][kx];
+				}
 	}
 	return w_all;
 }

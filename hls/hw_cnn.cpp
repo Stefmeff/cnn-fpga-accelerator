@@ -1,6 +1,7 @@
 #include "hw_cnn.h"
 #include "dtypes.h"
 #include "conv2d/conv2d.h"
+#include <hls_stream.h>
 
 #define N_LAYERS 24
 
@@ -71,6 +72,26 @@ static void store_dram(const T* src, float* dst, int n) {
         dst[n-1] = (float)src[n-1];
 }
 
+static void stream_weights(const float* src, hls::stream<weight_t>& ws, int n) {
+    int pairs = n >> 1;
+    for (int i = 0; i < pairs; i++) {
+        #pragma HLS PIPELINE II=2
+        ws.write((weight_t)src[2*i]);
+        ws.write((weight_t)src[2*i + 1]);
+    }
+    if (n & 1)
+        ws.write((weight_t)src[n-1]);
+}
+
+static void conv_layer(const float* wsrc, const act_t* x, const bias_t* b,
+                       act_t* z, int Cin, int Cout, int H, int W) {
+    #pragma HLS DATAFLOW
+    hls::stream<weight_t> weight_fifo;
+    #pragma HLS STREAM variable=weight_fifo depth=256
+    stream_weights(wsrc, weight_fifo, Cout * Cin * 9);
+    conv2d_core(x, weight_fifo, b, z, Cin, Cout, H, W);
+}
+
 
 static void maxpool_core(const act_t* in, act_t* out, int C, int H, int W) {
     int Ho = H >> 1, Wo = W >> 1;
@@ -108,10 +129,10 @@ void convEngine(
 )
 {
 // HLS interface pragmas
-#pragma HLS INTERFACE m_axi port=xin  offset=slave bundle=gmem0 depth=3072
-#pragma HLS INTERFACE m_axi port=wbuf offset=slave bundle=gmem1 depth=267696
-#pragma HLS INTERFACE m_axi port=bbuf offset=slave bundle=gmem2 depth=688
-#pragma HLS INTERFACE m_axi port=zout offset=slave bundle=gmem3 depth=64
+#pragma HLS INTERFACE m_axi port=xin bundle=gmem0 depth=3072
+#pragma HLS INTERFACE m_axi port=wbuf bundle=gmem1 depth=267696
+#pragma HLS INTERFACE m_axi port=bbuf bundle=gmem2 depth=688
+#pragma HLS INTERFACE m_axi port=zout bundle=gmem3 depth=64
 
 #pragma HLS INTERFACE s_axilite port=xin  bundle=control
 #pragma HLS INTERFACE s_axilite port=wbuf bundle=control
@@ -125,8 +146,7 @@ void convEngine(
     #pragma HLS bind_storage variable=fmap_bufA type=ram_2p impl=bram
     #pragma HLS bind_storage variable=fmap_bufB type=ram_2p impl=bram
 
-    // Single (non-double-buffered) weight and bias tiles for the current layer
-    weight_t weights_buf[WEIGHTS_MAX];
+    // Bias tile for the current layer (weights are streamed straight from DRAM)
     bias_t   bias_buf[BIAS_MAX];
 
     // Load the input image into buffer A
@@ -145,13 +165,12 @@ void convEngine(
             //number of weights for this layer
             int wn = lp.Cout * lp.Cin * 9;
 
-            //load weights and biases from DRAM
-            load_dram<weight_t>(wbuf + w_off, weights_buf, wn);
+            //load biases from DRAM (weights stream directly inside conv_layer)
             load_dram<bias_t>(bbuf + b_off, bias_buf, lp.Cout);
 
             //every conv in rnet20 is followed by ReLU -> always fuse it on write
-            conv2d_core(cur, weights_buf, bias_buf, nxt,
-                        lp.Cin, lp.Cout, lp.H, lp.W, true);
+            conv_layer(wbuf + w_off, cur, bias_buf, nxt,
+                       lp.Cin, lp.Cout, lp.H, lp.W);
 
             //increment offsets for next layer's weights/biases
             w_off += wn;

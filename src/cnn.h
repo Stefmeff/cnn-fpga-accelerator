@@ -60,6 +60,7 @@ class CNN{
 	void inference(Tensor * inputs, int N, uint8_t preds[]);
 	void print_timing(int N);
 	FLOAT * genSeqConvWeights(int * w_total);
+	FLOAT * genSeqConvWeightsWS(int * w_total);   // weight-stationary stream order
 	FLOAT * genSeqConvBias(int * b_total);
 };
 

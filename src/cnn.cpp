@@ -1,6 +1,8 @@
 
 #include "cnn.h"
 
+#define HLS
+
 #ifdef BOARD
 #include <xrt.h>
 #include "bitLoad.h"
@@ -107,7 +109,7 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 {
 #ifdef HLS
 	int w_total,b_total;
-	FLOAT * w_all = genSeqConvWeights(&w_total);   // conv weights only
+	FLOAT * w_all = genSeqConvWeightsWS(&w_total);   // conv weights only
 	FLOAT * b_all = genSeqConvBias(&b_total);
 
 	CNN_layer_struct * lin = &layers[41];          // LINEAR layer (run in software)
@@ -144,7 +146,7 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 #elif defined BOARD
 	//generate weights and biase into flattened array
 	int w_total,b_total;
-	FLOAT * w_all = genSeqConvWeights(&w_total);   // all conv weights, contiguous
+	FLOAT * w_all = genSeqConvWeightsWS(&w_total);   // all conv weights, contiguous
 	FLOAT * b_all = genSeqConvBias(&b_total);      // all conv biases,  contiguous
 
 	//load the FPGA bitstream and create the kernel object

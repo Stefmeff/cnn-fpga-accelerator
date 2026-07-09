@@ -2,6 +2,7 @@
 #define HLS_CONV2D_H
 
 #include "dtypes.h"   // act_t / weight_t / bias_t / acc_t
+#include <hls_stream.h>
 
 //dimensions derived from utils/nets.h and cifar10 dataset:
 
@@ -34,27 +35,14 @@
  * @param H Height of input feature map
  * @param W Width of input feature map
  */
-void conv2d_hls(
+void conv2d_core(
         const act_t x[],
-        const weight_t w[],
+        hls::stream<weight_t>& w,
         const bias_t b[],
         act_t z[],
         int Cin,
         int Cout,
         int H,
         int W
-);
-
-
-void conv2d_core(
-        const act_t x[],
-        const weight_t w[],
-        const bias_t b[],
-        act_t z[],
-        int Cin,
-        int Cout,
-        int H,
-        int W,
-        bool relu = false
 );
 #endif // HLS_CONV2D_H

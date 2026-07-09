@@ -13,169 +13,140 @@
  */
 
 #include "conv2d.h"
+#include <hls_stream.h>
 
-/**
- * TODO:
- * - implement hls for 2d convolution
- * - first implement baseline (simple nexted loops), no optimizations
- * - then HLS optimized version (dataflow, pipeline, array_partition, etc.)
- * - then maybe algorithmic approach (Winograd, FFT, etc.)
- */
 
 
 static void conv2d_weight_stationary(
-        const act_t x[], 
-        const weight_t w[], 
-        const bias_t b[], 
+        const act_t x[],
+        hls::stream<weight_t>& w,
+        const bias_t b[],
         act_t z[],
         int Cin, 
         int Cout, 
         int H, 
-        int W,
-        bool relu)
+        int W)
 {
-    
+    //initialize LUTRAM for accumulated outputs of COUT_TILE output channels
     acc_t oacc[COUT_TILE][CONV_MAX_PIX];
     #pragma HLS ARRAY_PARTITION variable=oacc complete dim=1
+    #pragma HLS BIND_STORAGE variable=oacc type=ram_2p impl=lutram
 
-    //loop over output channels in tiles of COUT_TILE
+
     for (int oc0 = 0; oc0 < Cout; oc0 += COUT_TILE) {
         #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_COUT/COUT_TILE
-
         for (int ic = 0; ic < Cin; ic++) {
             #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_CIN
 
-            //store input channel's 3x3 kernel for each of the T output channels in registers
+            //initialize Register for 3x3 kernel weights for COUT_TILE output channels
             weight_t kernel[COUT_TILE][KSIZE][KSIZE];
             #pragma HLS ARRAY_PARTITION variable=kernel complete dim=0
 
-            //read the T kernels for this input channel into registers (reused across whole input map)
-            for (int t = 0; t < COUT_TILE; t++)
-                for (int ky = 0; ky < KSIZE; ky++)
-                    for (int kx = 0; kx < KSIZE; kx++)
-                        #pragma HLS UNROLL
-                        kernel[t][ky][kx] = w[(((oc0 + t) * Cin + ic) * KSIZE + ky) * KSIZE + kx];
+            const int TOTAL_WEIGHTS = COUT_TILE * KSIZE * KSIZE;
+            weight_t* kernel_ptr = &kernel[0][0][0];
+
+            load_weights: for (int i = 0; i < TOTAL_WEIGHTS; i++) {
+                #pragma HLS PIPELINE II=1
+                kernel_ptr[i] = w.read();
+            }
 
 
-            //store 3 rows of input channel in a line buffer (shift register) for acces accross T tiles of output channels.
-            act_t row[KSIZE][CONV_MAX_DIM];
-            #pragma HLS ARRAY_PARTITION variable=row complete dim=0
+            act_t line_buf[KSIZE - 1][CONV_MAX_DIM];
+            #pragma HLS ARRAY_PARTITION variable=line_buf complete dim=1
 
-            //initialize the line buffer with pad + first two rows of input
             for (int c = 0; c < W; c++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS LOOP_TRIPCOUNT min=8 max=CONV_MAX_DIM
-                row[0][c] = (act_t)0;                                       // row -1 (pad)
-                row[1][c] =            x[(ic * H + 0) * W + c];             // row 0
-                row[2][c] = (1 < H) ? x[(ic * H + 1) * W + c] : (act_t)0;   // row 1
+                line_buf[0][c] = (act_t)0;
+                line_buf[1][c] = (ic * H + 0 < H) ? x[(ic * H + 0) * W + c] : (act_t)0;
             }
 
-            //slide the 3x3 window across the input feature map
-            for (int oy = 0; oy < H; oy++) {
-                #pragma HLS LOOP_TRIPCOUNT min=8 max=CONV_MAX_DIM
+            act_t window[KSIZE][KSIZE];
+            #pragma HLS ARRAY_PARTITION variable=window complete dim=0
 
-                //input row streamed in during this pass, feeding the next output row
-                int next = oy + 2;
+            int oy = 0, ox = 0;
+            const int ic_base = ic * H * W;
+            int rd_idx = ic_base + 1 * W; 
+            const int in_end = ic_base + H * W;
 
-                //slide the 3x3 window across the row
-                for (int ox = 0; ox < W; ox++) {
-                    #pragma HLS PIPELINE II=1
-                    #pragma HLS LOOP_TRIPCOUNT min=8 max=32
+            // Schleife über alle Pixel
+            for (int p = 0; p < H * W; p++) {
+                #pragma HLS PIPELINE II=1
+                #pragma HLS DEPENDENCE variable=oacc inter false
+                #pragma HLS LOOP_TRIPCOUNT min=64 max=CONV_MAX_PIX
 
-                    //comput accross T output channels in parallel
-                    for (int t = 0; t < COUT_TILE; t++) {
+                act_t new_pixel = (rd_idx < in_end && ox < W) ? x[rd_idx] : (act_t)0;
+
+                
+                act_t r0 = line_buf[0][ox];
+                act_t r1 = line_buf[1][ox];
+                act_t r2 = new_pixel;
+
+                for (int ky = 0; ky < KSIZE; ky++) {
+                    #pragma HLS UNROLL
+                    window[ky][0] = window[ky][1];
+                    window[ky][1] = window[ky][2];
+                }
+                
+                window[0][2] = (oy - 1 >= 0) ? r0 : (act_t)0;
+                window[1][2] = r1;
+                window[2][2] = (oy + 1 < H)  ? r2 : (act_t)0;
+
+                for (int t = 0; t < COUT_TILE; t++) {
+                    #pragma HLS UNROLL
+                    acc_t psum = 0;
+                    for (int ky = 0; ky < KSIZE; ky++) {
                         #pragma HLS UNROLL
-                        acc_t psum = 0;
-
-                        //parallel multiply-accumulate for this unit's 3x3 window
-                        for (int ky = 0; ky < KSIZE; ky++) {
+                        for (int kx = 0; kx < KSIZE; kx++) {
                             #pragma HLS UNROLL
-                            for (int kx = 0; kx < KSIZE; kx++) {
-                                #pragma HLS UNROLL
-                                int ix = ox + kx - 1;
-                                act_t xv = (ix >= 0 && ix < W) ? row[ky][ix] : (act_t)0;
-                                psum += xv * kernel[t][ky][kx];
-                            }
+                            int ix = ox + kx - 1;
+                            act_t xv = (ix >= 0 && ix < W) ? window[ky][kx] : (act_t)0;
+                            
+                            psum += xv * kernel[t][ky][kx];
                         }
-
-                        //either add bias for the first input channel or accumulate with previous input channels
-                        acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][oy * W + ox];
-                        oacc[t][oy * W + ox] = prev + psum;
                     }
-
-
-                    if (ox >= 1) {
-                        int c = ox - 1;
-                        row[0][c] = row[1][c];
-                        row[1][c] = row[2][c];
-                        row[2][c] = (next < H) ? x[(ic * H + next) * W + c] : (act_t)0;
-                    }
+                    
+                    acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][p];
+                    oacc[t][p] = prev + psum;
                 }
 
-                {
-                    int c = W - 1;
-                    row[0][c] = row[1][c];
-                    row[1][c] = row[2][c];
-                    row[2][c] = (next < H) ? x[(ic * H + next) * W + c] : (act_t)0;
+                line_buf[0][ox] = r1;
+                line_buf[1][ox] = r2;
+
+                rd_idx++;
+                if (ox == W - 1) { 
+                    ox = 0; 
+                    oy++; 
+                } else { 
+                    ox++; 
                 }
             }
+
         }
 
-        //write accumulated results to output (include relu)
+        bool final1 = ((Cin & 1) == 0);
         for (int t = 0; t < COUT_TILE; t++) {
             for (int i = 0; i < H * W; i++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS LOOP_TRIPCOUNT min=64 max=1024
                 acc_t v = oacc[t][i];
-                if (relu && v < (acc_t)0) v = (acc_t)0;   // fused ReLU
+                if (v < (acc_t)0) v = (acc_t)0;
                 z[(oc0 + t) * H * W + i] = (act_t)v;
             }
         }
     }
 }
 
-/** Dispatch to the dataflow variant selected by CONV_DATAFLOW (see conv2d.h). */
+
 void conv2d_core(
         const act_t x[],
-        const weight_t w[],
+        hls::stream<weight_t>& w,
         const bias_t b[],
         act_t z[],
         int Cin,
         int Cout,
         int H,
-        int W,
-        bool relu)
+        int W)
 {
-    //Change version in here:
-    conv2d_weight_stationary(x, w, b, z, Cin, Cout, H, W, relu);
-}
-
-
-void conv2d_hls(
-        const act_t x[],
-        const weight_t w[],
-        const bias_t b[],
-        act_t z[],
-        int Cin,
-        int Cout,
-        int H,
-        int W
-    )
-{
-#pragma HLS INTERFACE m_axi port=x offset=slave bundle=gmem0 depth=CONV_MAX_X
-#pragma HLS INTERFACE m_axi port=w offset=slave bundle=gmem1 depth=CONV_MAX_W
-#pragma HLS INTERFACE m_axi port=b offset=slave bundle=gmem2 depth=CONV_MAX_COUT
-#pragma HLS INTERFACE m_axi port=z offset=slave bundle=gmem3 depth=CONV_MAX_Z
-
-#pragma HLS INTERFACE s_axilite port=x    bundle=control
-#pragma HLS INTERFACE s_axilite port=w    bundle=control
-#pragma HLS INTERFACE s_axilite port=b    bundle=control
-#pragma HLS INTERFACE s_axilite port=z    bundle=control
-#pragma HLS INTERFACE s_axilite port=Cin  bundle=control
-#pragma HLS INTERFACE s_axilite port=Cout bundle=control
-#pragma HLS INTERFACE s_axilite port=H    bundle=control
-#pragma HLS INTERFACE s_axilite port=W    bundle=control
-#pragma HLS INTERFACE s_axilite port=return bundle=control
-
-    conv2d_core(x, w, b, z, Cin, Cout, H, W);
+    conv2d_weight_stationary(x, w, b, z, Cin, Cout, H, W);
 }

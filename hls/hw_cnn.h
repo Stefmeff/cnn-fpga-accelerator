@@ -16,6 +16,9 @@
 
 #define IMAGE_MAX 3072
 
+
+#define COUT_TILE 8
+
 /**
  * @brief Kernel function for the CNN accelerator.
  * 
