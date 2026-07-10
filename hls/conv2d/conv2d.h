@@ -45,4 +45,18 @@ void conv2d_core(
         int H,
         int W
 );
+
+/**
+ * @brief Test-only synthesis top
+ */
+void conv2d_hls(
+        const float x[],
+        const float w[],
+        const float b[],
+        act_t z[],
+        int Cin,
+        int Cout,
+        int H,
+        int W
+);
 #endif // HLS_CONV2D_H

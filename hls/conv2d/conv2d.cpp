@@ -57,8 +57,8 @@ static void conv2d_weight_stationary(
             for (int c = 0; c < W; c++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS LOOP_TRIPCOUNT min=8 max=CONV_MAX_DIM
-                line_buf[0][c] = (act_t)0;
-                line_buf[1][c] = (ic * H + 0 < H) ? x[(ic * H + 0) * W + c] : (act_t)0;
+                line_buf[0][c] = (act_t)0;                       // row -1 (top pad)
+                line_buf[1][c] = x[ic * H * W + c];              // row 0 of channel ic
             }
 
             act_t window[KSIZE][KSIZE];
@@ -116,7 +116,8 @@ static void conv2d_weight_stationary(
                         }
 
                         acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][p_out];
-                        acc_t acc_sum = prev + psum;
+                        oacc[t][p_out] = prev + psum;
+                        /**
                         if(ic == Cin - 1) {
                             //last input channel -> write directly to output(with ReLU)
                             if(acc_sum < (acc_t)0) acc_sum = (acc_t)0;
@@ -124,7 +125,7 @@ static void conv2d_weight_stationary(
                         } else {
                             //accumulate for next input channel
                             oacc[t][p_out] = acc_sum;
-                        } 
+                        } */
                     }
                 }
 
@@ -135,7 +136,6 @@ static void conv2d_weight_stationary(
 
         }
 
-        /**
         bool final1 = ((Cin & 1) == 0);
         for (int t = 0; t < COUT_TILE; t++) {
             for (int i = 0; i < H * W; i++) {
@@ -145,7 +145,7 @@ static void conv2d_weight_stationary(
                 if (v < (acc_t)0) v = (acc_t)0;
                 z[(oc0 + t) * H * W + i] = (act_t)v;
             }
-        }*/
+        }
     }
 }
 
@@ -161,4 +161,50 @@ void conv2d_core(
         int W)
 {
     conv2d_weight_stationary(x, w, b, z, Cin, Cout, H, W);
+}
+
+
+void conv2d_hls(
+        const float x[],
+        const float w[],
+        const float b[],
+        act_t z[],                 // raw fixed-point out: bit-exact C/RTL (no float denormal noise)
+        int Cin,
+        int Cout,
+        int H,
+        int W)
+{
+#pragma HLS INTERFACE m_axi port=x bundle=gmem0 depth=65536
+#pragma HLS INTERFACE m_axi port=w bundle=gmem1 depth=36864
+#pragma HLS INTERFACE m_axi port=b bundle=gmem2 depth=64
+#pragma HLS INTERFACE m_axi port=z bundle=gmem3 depth=65536
+#pragma HLS INTERFACE s_axilite port=x    bundle=control
+#pragma HLS INTERFACE s_axilite port=w    bundle=control
+#pragma HLS INTERFACE s_axilite port=b    bundle=control
+#pragma HLS INTERFACE s_axilite port=z    bundle=control
+#pragma HLS INTERFACE s_axilite port=Cin  bundle=control
+#pragma HLS INTERFACE s_axilite port=Cout bundle=control
+#pragma HLS INTERFACE s_axilite port=H    bundle=control
+#pragma HLS INTERFACE s_axilite port=W    bundle=control
+#pragma HLS INTERFACE s_axilite port=return bundle=control
+
+    static act_t  x_buf[CONV_MAX_X];
+    static bias_t b_buf[CONV_MAX_COUT];
+    static act_t  z_buf[CONV_MAX_Z];
+
+    const int xn = Cin * H * W;
+    const int wn = Cout * Cin * 9;
+    const int zn = Cout * H * W;
+
+    for (int i = 0; i < xn; i++)   x_buf[i] = (act_t)x[i];
+    for (int i = 0; i < Cout; i++) b_buf[i] = (bias_t)b[i];
+
+    
+    hls::stream<weight_t> w_fifo;
+    #pragma HLS STREAM variable=w_fifo depth=36864
+    for (int i = 0; i < wn; i++) w_fifo.write((weight_t)w[i]);
+
+    conv2d_core(x_buf, w_fifo, b_buf, z_buf, Cin, Cout, H, W);
+
+    for (int i = 0; i < zn; i++) z[i] = z_buf[i];
 }
