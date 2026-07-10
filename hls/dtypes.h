@@ -7,7 +7,9 @@
 #ifndef DTYPES_H
 #define DTYPES_H
 
+#ifndef USE_FLOAT          // -DUSE_FLOAT builds the float model (no quantization)
 #define USE_FIXED_POINT
+#endif
 
 
 #ifndef FP_ACT_W
@@ -15,8 +17,8 @@
   #define FP_ACT_I 8      
   #define FP_W_W   16
   #define FP_W_I   4      
-  #define FP_ACC_W 26
-  #define FP_ACC_I 16    
+  #define FP_ACC_W 32    // 16 int + 16 frac: 10 frac bits lost ~16% accuracy
+  #define FP_ACC_I 16
 #endif
 
 #ifdef USE_FIXED_POINT

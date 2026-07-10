@@ -64,22 +64,23 @@ static void conv2d_weight_stationary(
             act_t window[KSIZE][KSIZE];
             #pragma HLS ARRAY_PARTITION variable=window complete dim=0
 
-            int oy = 0, ox = 0;
+            int oy = 0, cx = 0;                  // cx = read column, 0..W (W = row-flush)
+            int out_row = 0;                     // oy * W, kept incrementally
             const int ic_base = ic * H * W;
-            int rd_idx = ic_base + 1 * W; 
+            int rd_idx = ic_base + 1 * W;        // input(oy+1, cx)
             const int in_end = ic_base + H * W;
 
-            // Schleife über alle Pixel
-            for (int p = 0; p < H * W; p++) {
+            for (int p = 0; p < H * (W + 1); p++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS DEPENDENCE variable=oacc inter false
-                #pragma HLS LOOP_TRIPCOUNT min=64 max=CONV_MAX_PIX
+                #pragma HLS LOOP_TRIPCOUNT min=72 max=CONV_MAX_PIX+CONV_MAX_DIM
 
-                act_t new_pixel = (rd_idx < in_end && ox < W) ? x[rd_idx] : (act_t)0;
+                bool reading = (cx < W);
+                int  rc = reading ? cx : 0;
+                act_t new_pixel = (reading && rd_idx < in_end) ? x[rd_idx] : (act_t)0;
 
-                
-                act_t r0 = line_buf[0][ox];
-                act_t r1 = line_buf[1][ox];
+                act_t r0 = reading ? line_buf[0][rc] : (act_t)0;
+                act_t r1 = reading ? line_buf[1][rc] : (act_t)0;
                 act_t r2 = new_pixel;
 
                 for (int ky = 0; ky < KSIZE; ky++) {
@@ -87,45 +88,54 @@ static void conv2d_weight_stationary(
                     window[ky][0] = window[ky][1];
                     window[ky][1] = window[ky][2];
                 }
-                
+
                 window[0][2] = (oy - 1 >= 0) ? r0 : (act_t)0;
                 window[1][2] = r1;
                 window[2][2] = (oy + 1 < H)  ? r2 : (act_t)0;
 
-                for (int t = 0; t < COUT_TILE; t++) {
-                    #pragma HLS UNROLL
-                    acc_t psum = 0;
-                    for (int ky = 0; ky < KSIZE; ky++) {
+                if (reading) {
+                    line_buf[0][rc] = r1;
+                    line_buf[1][rc] = r2;
+                }
+
+                int oc = cx - 1;                 // output column the window is centered on
+                if (oc >= 0) {
+                    int p_out = out_row + oc;
+                    for (int t = 0; t < COUT_TILE; t++) {
                         #pragma HLS UNROLL
-                        for (int kx = 0; kx < KSIZE; kx++) {
+                        acc_t psum = 0;
+                        for (int ky = 0; ky < KSIZE; ky++) {
                             #pragma HLS UNROLL
-                            int ix = ox + kx - 1;
-                            act_t xv = (ix >= 0 && ix < W) ? window[ky][kx] : (act_t)0;
-
-                            auto prod = xv * kernel[t][ky][kx];
-                            #pragma HLS BIND_OP variable=prod op=mul impl=dsp
-                            psum += prod;
+                            for (int kx = 0; kx < KSIZE; kx++) {
+                                #pragma HLS UNROLL
+                                #pragma HLS BIND_OP variable=psum op=addmul impl=dsp
+                                int ix = oc + kx - 1;
+                                act_t xv = (ix >= 0 && ix < W) ? window[ky][kx] : (act_t)0;
+                                psum += xv * kernel[t][ky][kx];;
+                            }
                         }
+
+                        acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][p_out];
+                        acc_t acc_sum = prev + psum;
+                        if(ic == Cin - 1) {
+                            //last input channel -> write directly to output(with ReLU)
+                            if(acc_sum < (acc_t)0) acc_sum = (acc_t)0;
+                            z[(oc0+t)*H*W + p_out] = (act_t)acc_sum;
+                        } else {
+                            //accumulate for next input channel
+                            oacc[t][p_out] = acc_sum;
+                        } 
                     }
-                    
-                    acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][p];
-                    oacc[t][p] = prev + psum;
                 }
 
-                line_buf[0][ox] = r1;
-                line_buf[1][ox] = r2;
-
-                rd_idx++;
-                if (ox == W - 1) { 
-                    ox = 0; 
-                    oy++; 
-                } else { 
-                    ox++; 
-                }
+                if (reading) rd_idx++;
+                if (cx == W) { cx = 0; oy++; out_row += W; }
+                else         cx++;
             }
 
         }
 
+        /**
         bool final1 = ((Cin & 1) == 0);
         for (int t = 0; t < COUT_TILE; t++) {
             for (int i = 0; i < H * W; i++) {
@@ -135,7 +145,7 @@ static void conv2d_weight_stationary(
                 if (v < (acc_t)0) v = (acc_t)0;
                 z[(oc0 + t) * H * W + i] = (act_t)v;
             }
-        }
+        }*/
     }
 }
 

@@ -19,7 +19,7 @@
 // T output channels computed in parallel from the same input window.
 // T must divid the CNNs Cout dims (16/32/64) => 1,2,4,8,16
 #ifndef COUT_TILE
-  #define COUT_TILE 8
+  #define COUT_TILE 16
 #endif
 
 /**

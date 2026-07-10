@@ -12,7 +12,6 @@ struct LayerParams {
     int Cin, Cout, H, W;
 };
 
-// ReLU is fused into each conv's output write, so it has no own layer entry.
 static const LayerParams CNN_Layers[N_LAYERS] = {
     {CONV, 3, 16, 32, 32},
     {CONV, 16, 16, 32, 32},
@@ -110,32 +109,62 @@ static void conv_layer(const act_t* x, const float* w, const bias_t* b,
     conv2d_core(x, weight_fifo, b, z, Cin, Cout, H, W);
 }
 
-
 static void maxpool_core(const act_t* in, act_t* out, int Cin, int H, int W) {
     int Ho = H >> 1, Wo = W >> 1;
+    
+    act_t line_buf[CONV_MAX_DIM >> 1];
+    #pragma HLS ARRAY_PARTITION variable=line_buf complete dim=1
 
-    act_t row_max[CONV_MAX_DIM>>1];
-
-    for (int c = 0; c < Cin; c++)
+    int in_ch = 0, out_ch = 0;                 
+    for (int c = 0; c < Cin; c++) {
         #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_CIN
-        for (int y = 0; y < H; y++)
-            for (int x = 0; x < W; x += 2) {
+        
+        int in_row = in_ch;                    
+        for (int y = 0; y < H; y++) {
+            int out_row = out_ch + (y >> 1) * Wo;
+            bool is_odd_row = (y & 1);
+
+            //pre-read input => compute in next cycle
+            act_t e1_reg = 0;
+            act_t e2_reg = 0;
+
+            
+            for (int x = 0; x < W + 2; x += 2) {
                 #pragma HLS PIPELINE II=1
-                act_t elem1 = in[(c*H + y)*W + x];
-                act_t elem2 = in[(c*H + y)*W + x + 1];
-                act_t m = (elem1 > elem2) ? elem1 : elem2;
                 
-                if(y & 1) {
-                    int oy = y >> 1;
-                    int ox = x >> 1;
-                    act_t prev = row_max[ox];
-                    act_t maxv = (m > prev) ? m : prev;
-                    out[(c*Ho + oy)*Wo + ox] = maxv;
-                } else {
-                    row_max[x>>1] = m;
+                //Read inputs of next iteration
+                act_t e1_next = 0;
+                act_t e2_next = 0;
+                if (x < W) {
+                    e1_next = in[in_row + x];
+                    e2_next = in[in_row + x + 1];
                 }
+
+                //Access previous reads to compute maxpool
+                if (x > 0) {
+                    act_t m = (e1_reg > e2_reg) ? e1_reg : e2_reg;
+                    int ox = (x - 2) >> 1;
+                    
+                    if (is_odd_row) {
+                        act_t prev = line_buf[ox];
+                        out[out_row + ox] = (m > prev) ? m : prev;
+                    } else {
+                        line_buf[ox] = m;
+                    }
+                }
+
+                //Save reads in registers for next iteration
+                e1_reg = e1_next;
+                e2_reg = e2_next;
             }
+            in_row += W;                       
+        }
+        in_ch  += H * W;                       
+        out_ch += Ho * Wo;
+    }
 }
+
+
 
 static void avgpool_core(const act_t* in, act_t* out, int C, int H, int W) {
     int n = H * W;
@@ -193,7 +222,7 @@ void convEngine(
             //number of weights for this layer
             int wn = lp.Cout * lp.Cin * 9;
 
-            //load biases from DRAM (weights stream directly inside conv_layer)
+            //load biases from DRAM
             load_dram<bias_t>(bbuf + b_off, bias_buf, lp.Cout);
 
             //every conv in rnet20 is followed by ReLU -> always fuse it on write
