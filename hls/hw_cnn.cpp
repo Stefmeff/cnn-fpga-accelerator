@@ -109,6 +109,23 @@ static void conv_layer(const act_t* x, const float* w, const bias_t* b,
     conv2d_core(x, weight_fifo, b, z, Cin, Cout, H, W);
 }
 
+static void maxpool_core(const act_t* in, act_t* out, int C, int H, int W) {
+    int Ho = H >> 1, Wo = W >> 1;
+    for (int c = 0; c < C; c++)
+        for (int oy = 0; oy < Ho; oy++)
+            for (int ox = 0; ox < Wo; ox++) {
+                int iy = oy << 1, ix = ox << 1;
+                act_t m = in[(c*H + iy)*W + ix];
+                for (int dy = 0; dy < 2; dy++)
+                    for (int dx = 0; dx < 2; dx++) {
+                        act_t v = in[(c*H + iy + dy)*W + ix + dx];
+                        if (v > m) m = v;
+                    }
+                out[(c*Ho + oy)*Wo + ox] = m;
+            }
+}
+
+/**
 static void maxpool_core(const act_t* in, act_t* out, int Cin, int H, int W) {
     int Ho = H >> 1, Wo = W >> 1;
     
@@ -162,7 +179,7 @@ static void maxpool_core(const act_t* in, act_t* out, int Cin, int H, int W) {
         in_ch  += H * W;                       
         out_ch += Ho * Wo;
     }
-}
+}*/
 
 
 
