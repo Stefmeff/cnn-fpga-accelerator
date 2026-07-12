@@ -27,18 +27,25 @@ static void conv2d_weight_stationary(
         int H, 
         int W)
 {
-    //initialize LUTRAM for accumulated outputs of COUT_TILE output channels
     acc_t oacc[COUT_TILE][CONV_MAX_PIX];
     #pragma HLS ARRAY_PARTITION variable=oacc complete dim=1
     #pragma HLS BIND_STORAGE variable=oacc type=ram_2p impl=bram
 
-
     for (int oc0 = 0; oc0 < Cout; oc0 += COUT_TILE) {
         #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_COUT/COUT_TILE
+
+        clear_oacc: for (int i = 0; i < H * W; i++) {
+            #pragma HLS PIPELINE II=1
+            for (int t = 0; t < COUT_TILE; t++) {
+                #pragma HLS UNROLL
+                oacc[t][i] = (acc_t)0;
+            }
+        }
+
         for (int ic = 0; ic < Cin; ic++) {
             #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_CIN
 
-            //initialize Register for 3x3 kernel weights for COUT_TILE output channels
+            // Gewichts-Register für die aktuelle Kachel
             weight_t kernel[COUT_TILE][KSIZE][KSIZE];
             #pragma HLS ARRAY_PARTITION variable=kernel complete dim=0
 
@@ -50,24 +57,23 @@ static void conv2d_weight_stationary(
                 kernel_ptr[i] = w.read();
             }
 
-
             act_t line_buf[KSIZE - 1][CONV_MAX_DIM];
             #pragma HLS ARRAY_PARTITION variable=line_buf complete dim=1
 
             for (int c = 0; c < W; c++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS LOOP_TRIPCOUNT min=8 max=CONV_MAX_DIM
-                line_buf[0][c] = (act_t)0;                       // row -1 (top pad)
-                line_buf[1][c] = x[ic * H * W + c];              // row 0 of channel ic
+                line_buf[0][c] = (act_t)0;                       
+                line_buf[1][c] = x[ic * H * W + c];              
             }
 
             act_t window[KSIZE][KSIZE];
             #pragma HLS ARRAY_PARTITION variable=window complete dim=0
 
-            int oy = 0, cx = 0;                  // cx = read column, 0..W (W = row-flush)
-            int out_row = 0;                     // oy * W, kept incrementally
+            int oy = 0, cx = 0;                  
+            int out_row = 0;                     
             const int ic_base = ic * H * W;
-            int rd_idx = ic_base + 1 * W;        // input(oy+1, cx)
+            int rd_idx = ic_base + 1 * W;        
             const int in_end = ic_base + H * W;
 
             for (int p = 0; p < H * (W + 1); p++) {
@@ -77,7 +83,12 @@ static void conv2d_weight_stationary(
 
                 bool reading = (cx < W);
                 int  rc = reading ? cx : 0;
-                act_t new_pixel = (reading && rd_idx < in_end) ? x[rd_idx] : (act_t)0;
+
+                // --- FIX 2: Absicherung des Hardware-Speicherzugriffs ---
+                // Falls rd_idx out-of-bounds läuft, klemmen wir die Adresse hart auf ein sicheres 
+                // Element (in_end - 1). Das verhindert illegale AXI-Bus-Adressen und Board-Hangs.
+                int safe_rd_idx = (rd_idx < in_end) ? rd_idx : (in_end - 1);
+                act_t new_pixel = (reading && rd_idx < in_end) ? x[safe_rd_idx] : (act_t)0;
 
                 act_t r0 = reading ? line_buf[0][rc] : (act_t)0;
                 act_t r1 = reading ? line_buf[1][rc] : (act_t)0;
@@ -98,7 +109,7 @@ static void conv2d_weight_stationary(
                     line_buf[1][rc] = r2;
                 }
 
-                int oc = cx - 1;                 // output column the window is centered on
+                int oc = cx - 1;                 
                 if (oc >= 0) {
                     int p_out = out_row + oc;
                     for (int t = 0; t < COUT_TILE; t++) {
@@ -111,21 +122,13 @@ static void conv2d_weight_stationary(
                                 #pragma HLS BIND_OP variable=psum op=addmul impl=dsp
                                 int ix = oc + kx - 1;
                                 act_t xv = (ix >= 0 && ix < W) ? window[ky][kx] : (act_t)0;
-                                psum += xv * kernel[t][ky][kx];;
+                                psum += xv * kernel[t][ky][kx];
                             }
                         }
 
+                        // Bei ic == 0 laden wir den Bias, addieren ihn auf das frische (genullte) oacc
                         acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][p_out];
                         oacc[t][p_out] = prev + psum;
-                        /**
-                        if(ic == Cin - 1) {
-                            //last input channel -> write directly to output(with ReLU)
-                            if(acc_sum < (acc_t)0) acc_sum = (acc_t)0;
-                            z[(oc0+t)*H*W + p_out] = (act_t)acc_sum;
-                        } else {
-                            //accumulate for next input channel
-                            oacc[t][p_out] = acc_sum;
-                        } */
                     }
                 }
 
@@ -133,10 +136,9 @@ static void conv2d_weight_stationary(
                 if (cx == W) { cx = 0; oy++; out_row += W; }
                 else         cx++;
             }
-
         }
 
-        bool final1 = ((Cin & 1) == 0);
+        // Ergebnis ausgeben (inklusive ReLU)
         for (int t = 0; t < COUT_TILE; t++) {
             for (int i = 0; i < H * W; i++) {
                 #pragma HLS PIPELINE II=1
@@ -148,6 +150,7 @@ static void conv2d_weight_stationary(
         }
     }
 }
+
 
 
 void conv2d_core(
