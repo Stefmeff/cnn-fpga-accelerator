@@ -1,23 +1,13 @@
 /**
  * @file conv2d.cpp
- * @author Stefan Moser
+ * @author Stefan Moser (optimized for HLS Streaming & Padding)
  * @brief This file implements a 2D convolution operation using HLS. 
- * 
- * @details The 2D-convolution applies a 3x3 kernel to an input feature map with stride 1 and zero padding.
- * The input feature map is represented as a 3D tensor with dimensions [Cin, H, W], where Cin is the number of input channels, 
- * H is the height, and W is the width. The kernel weights are represented as a 4D tensor with dimensions [Cout, Cin, 3, 3], 
- * where Cout is the number of output channels. The output feature map is also a 3D tensor with dimensions [Cout, H, W].
- * 
- * The goal is to implement multiple versions of the convoltion operation optimized for HLS,
- * 
  */
 
 #include "conv2d.h"
 #include <hls_stream.h>
 
-
-
-static void conv2d_weight_stationary(
+void conv2d_ws(
         const act_t x[],
         hls::stream<weight_t>& w,
         const bias_t b[],
@@ -29,38 +19,33 @@ static void conv2d_weight_stationary(
 {
     acc_t oacc[COUT_TILE][CONV_MAX_PIX];
     #pragma HLS ARRAY_PARTITION variable=oacc complete dim=1
-    #pragma HLS BIND_STORAGE variable=oacc type=ram_2p impl=bram
+    #pragma HLS bind_storage variable=oacc type=ram_2p impl=bram
 
+    int w_read = 0;
     for (int oc0 = 0; oc0 < Cout; oc0 += COUT_TILE) {
         #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_COUT/COUT_TILE
-
-        clear_oacc: for (int i = 0; i < H * W; i++) {
-            #pragma HLS PIPELINE II=1
-            for (int t = 0; t < COUT_TILE; t++) {
-                #pragma HLS UNROLL
-                oacc[t][i] = (acc_t)0;
-            }
-        }
 
         for (int ic = 0; ic < Cin; ic++) {
             #pragma HLS LOOP_TRIPCOUNT min=1 max=CONV_MAX_CIN
 
-            // Gewichts-Register für die aktuelle Kachel
             weight_t kernel[COUT_TILE][KSIZE][KSIZE];
             #pragma HLS ARRAY_PARTITION variable=kernel complete dim=0
 
-            const int TOTAL_WEIGHTS = COUT_TILE * KSIZE * KSIZE;
-            weight_t* kernel_ptr = &kernel[0][0][0];
-
-            load_weights: for (int i = 0; i < TOTAL_WEIGHTS; i++) {
-                #pragma HLS PIPELINE II=1
-                kernel_ptr[i] = w.read();
+            init_kernel: for (int t = 0; t < COUT_TILE; t++) {
+                #pragma HLS LOOP_FLATTEN off
+                inti_kernel_y: for (int ky = 0; ky < KSIZE; ky++) {
+                    #pragma HLS LOOP_FLATTEN off
+                    inti_kernel_x: for (int kx = 0; kx < KSIZE; kx++) {
+                        #pragma HLS PIPELINE II=1
+                        kernel[t][ky][kx] = w.read();
+                    }
+                }
             }
 
             act_t line_buf[KSIZE - 1][CONV_MAX_DIM];
             #pragma HLS ARRAY_PARTITION variable=line_buf complete dim=1
 
-            for (int c = 0; c < W; c++) {
+            init_line_buf: for (int c = 0; c < W; c++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS LOOP_TRIPCOUNT min=8 max=CONV_MAX_DIM
                 line_buf[0][c] = (act_t)0;                       
@@ -70,13 +55,14 @@ static void conv2d_weight_stationary(
             act_t window[KSIZE][KSIZE];
             #pragma HLS ARRAY_PARTITION variable=window complete dim=0
 
+
             int oy = 0, cx = 0;                  
             int out_row = 0;                     
             const int ic_base = ic * H * W;
             int rd_idx = ic_base + 1 * W;        
             const int in_end = ic_base + H * W;
 
-            for (int p = 0; p < H * (W + 1); p++) {
+            sliding_window: for (int p = 0; p < H * (W + 1); p++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS DEPENDENCE variable=oacc inter false
                 #pragma HLS LOOP_TRIPCOUNT min=72 max=CONV_MAX_PIX+CONV_MAX_DIM
@@ -84,9 +70,6 @@ static void conv2d_weight_stationary(
                 bool reading = (cx < W);
                 int  rc = reading ? cx : 0;
 
-                // --- FIX 2: Absicherung des Hardware-Speicherzugriffs ---
-                // Falls rd_idx out-of-bounds läuft, klemmen wir die Adresse hart auf ein sicheres 
-                // Element (in_end - 1). Das verhindert illegale AXI-Bus-Adressen und Board-Hangs.
                 int safe_rd_idx = (rd_idx < in_end) ? rd_idx : (in_end - 1);
                 act_t new_pixel = (reading && rd_idx < in_end) ? x[safe_rd_idx] : (act_t)0;
 
@@ -112,7 +95,7 @@ static void conv2d_weight_stationary(
                 int oc = cx - 1;                 
                 if (oc >= 0) {
                     int p_out = out_row + oc;
-                    for (int t = 0; t < COUT_TILE; t++) {
+                    compute: for (int t = 0; t < COUT_TILE; t++) {
                         #pragma HLS UNROLL
                         acc_t psum = 0;
                         for (int ky = 0; ky < KSIZE; ky++) {
@@ -126,9 +109,10 @@ static void conv2d_weight_stationary(
                             }
                         }
 
-                        // Bei ic == 0 laden wir den Bias, addieren ihn auf das frische (genullte) oacc
+
                         acc_t prev = (ic == 0) ? (acc_t)b[oc0 + t] : oacc[t][p_out];
-                        oacc[t][p_out] = prev + psum;
+                        acc_t res = prev + psum;
+                        oacc[t][p_out] = res;
                     }
                 }
 
@@ -139,7 +123,7 @@ static void conv2d_weight_stationary(
         }
 
         // Ergebnis ausgeben (inklusive ReLU)
-        for (int t = 0; t < COUT_TILE; t++) {
+        write_back: for (int t = 0; t < COUT_TILE; t++) {
             for (int i = 0; i < H * W; i++) {
                 #pragma HLS PIPELINE II=1
                 #pragma HLS LOOP_TRIPCOUNT min=64 max=1024
@@ -153,6 +137,8 @@ static void conv2d_weight_stationary(
 
 
 
+
+
 void conv2d_core(
         const act_t x[],
         hls::stream<weight_t>& w,
@@ -163,15 +149,14 @@ void conv2d_core(
         int H,
         int W)
 {
-    conv2d_weight_stationary(x, w, b, z, Cin, Cout, H, W);
+    conv2d_ws(x, w, b, z, Cin, Cout, H, W);
 }
-
 
 void conv2d_hls(
         const float x[],
         const float w[],
         const float b[],
-        act_t z[],                 // raw fixed-point out: bit-exact C/RTL (no float denormal noise)
+        act_t z[],               
         int Cin,
         int Cout,
         int H,
@@ -202,12 +187,11 @@ void conv2d_hls(
     for (int i = 0; i < xn; i++)   x_buf[i] = (act_t)x[i];
     for (int i = 0; i < Cout; i++) b_buf[i] = (bias_t)b[i];
 
-    
     hls::stream<weight_t> w_fifo;
     #pragma HLS STREAM variable=w_fifo depth=36864
     for (int i = 0; i < wn; i++) w_fifo.write((weight_t)w[i]);
 
-    conv2d_core(x_buf, w_fifo, b_buf, z_buf, Cin, Cout, H, W);
+    //conv2d_core(x_buf, w_fifo, b_buf, z_buf, Cin, Cout, H, W);
 
     for (int i = 0; i < zn; i++) z[i] = z_buf[i];
 }

@@ -18,6 +18,19 @@ using namespace ml;
 const char * PRJ_PATH = PRJ_ROOT;
 
 
+// Pass/fail tolerances for the correctness test. An output element passes if
+// EITHER its absolute or its relative error is within bound (softmax outputs
+// cluster near 0, where relative error alone is meaningless). Fixed-point builds
+// accrue quantization error (ap_fixed<16,8> activations), so they need a looser
+// absolute bound than the near-exact float build.
+#ifdef USE_FLOAT
+  #define TEST_ABS_TOL 0.01f
+  #define TEST_REL_TOL 0.01f
+#else
+  #define TEST_ABS_TOL 0.05f
+  #define TEST_REL_TOL 0.05f
+#endif
+
 int test_net( CNN * net,const char * data_file);
 int bench_net(CNN * net,const char * data_file, int N);
 int predict_image(CNN * net,const char * img_file);
@@ -72,48 +85,119 @@ int test_net(CNN * net, const char * data_file)
 		printf("Reading data file failed!\n");
 		return 1;
 	}
+
 	uint32_t ntests;
 	if(fread(&ntests,sizeof(ntests),1,f) == 0){
 		printf("Reading tests failed!\n");
+		fclose(f);
 		return 1;
 	}
+
 	Tensor X,R;
-	double total_time = 0;
 	printf("Data: %s\n", full_path.c_str());
 	printf("N: %d\n", ntests);
+
 	int ret = 0;
-	int misclassified = 0;
-	float max_drift = 0.0f;
+
+	// Store all wrong pixel locations
+	struct WrongPixel {
+		int image;
+		int index;
+		float ref;
+		float dut;
+		float abs_err;
+		float rel_err;
+	};
+
+	std::vector<WrongPixel> wrong_pixels;
+	int total_wrong_pixels = 0;
+
 	for(int i = 0; i < ntests ; i++){
+
 		X.read(f);
 		R.read(f);
+
 		uint8_t pred;
 		net->inference(&X,1,&pred);
+
 		Tensor * Z = net->layers.back().Z;
+
 		if(Z->size[2] != R.size[2]){
-			printf("Test failed Output Tensor has the wrong Dimensions! \n");
+			printf("Test failed: Output Tensor has wrong dimensions!\n");
+			fclose(f);
 			return 1;
 		}
-		// Probability drift vs reference — REPORTED only (quantization shifts the
-		// softmax values); does NOT fail the test.
-		for(int k = 0; k < (int)R.size[2]; k++){
-			float d = fabsf(R.data[0][0][k] - Z->data[0][0][k]);
-			if(d > max_drift) max_drift = d;
+
+		float max_abs = 0.f;
+		float max_rel = 0.f;
+
+		int image_wrong_pixels = 0;
+
+		for(int k = 0; k < R.size[2]; k++){
+
+			float rref = R[0][0][k];
+			float rdut = (*Z)[0][0][k];
+
+			float abs_err = fabsf(rref - rdut);
+			float rel_err = abs_err / (fabsf(rref) + 1e-6f);
+
+			if(abs_err > max_abs)
+				max_abs = abs_err;
+
+			if(rel_err > max_rel)
+				max_rel = rel_err;
+
+
+			// Pixel failed
+			if(abs_err > TEST_ABS_TOL && rel_err > TEST_REL_TOL){
+
+				ret = 1;
+				total_wrong_pixels++;
+				image_wrong_pixels++;
+
+				wrong_pixels.push_back({
+					i,
+					k,
+					rref,
+					rdut,
+					abs_err,
+					rel_err
+				});
+			}
 		}
-		// Pass/fail is on the PREDICTED CLASS (argmax) — the correct metric for
-		// quantized inference. A per-element tolerance would false-fail here.
-		int ref_pred = 0;
-		for(int k = 1; k < (int)R.size[2]; k++)
-			if(R.data[0][0][k] > R.data[0][0][ref_pred]) ref_pred = k;
-		if((int)pred != ref_pred){
-			printf("  MISCLASSIFIED image %d: got %d, expected %d\n", i, pred, ref_pred);
-			misclassified++;
-			ret = 1;
+
+		printf("Image %d: max abs err = %.6f, max rel err = %.6f, wrong pixels = %d\n",
+		       i, max_abs, max_rel, image_wrong_pixels);
+	}
+
+
+	printf("\n=======================\n");
+	printf("Test Summary\n");
+	printf("=======================\n");
+	printf("Images tested: %d\n", ntests);
+	printf("Wrong pixels: %d\n", total_wrong_pixels);
+
+	if(total_wrong_pixels > 0){
+
+		printf("\nWrong pixel locations:\n");
+		printf("-----------------------\n");
+
+		for(const auto &wp : wrong_pixels){
+
+			printf("Image %d | Index %d | REF %.6f | DUT %.6f | ABS %.6f | REL %.6f\n",
+				wp.image,
+				wp.index,
+				wp.ref,
+				wp.dut,
+				wp.abs_err,
+				wp.rel_err);
 		}
 	}
-	printf("Classification: %d/%d correct | max prob drift vs reference = %.4f\n",
-	       ntests - misclassified, ntests, max_drift);
+
+	printf("=======================\n");
+
 	net->print_timing(1);
+
 	fclose(f);
 	return ret;
 }

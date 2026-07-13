@@ -122,7 +122,7 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 	for(int iter = 0; iter < N; iter++){
 		Tensor * X = &(input[iter]);
 
-		
+
 		convEngine(X->data[0][0], w_all, b_all, zout);
 
 
@@ -167,6 +167,8 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 	//write weight and biases to buffer
 	wbuf.write(w_all);
 	bbuf.write(b_all);
+	wbuf.sync(XCL_BO_SYNC_BO_TO_DEVICE);           // DMA weights to device (Zynq non-coherent mem)
+	bbuf.sync(XCL_BO_SYNC_BO_TO_DEVICE);           // DMA biases  to device
 
 
 
@@ -177,20 +179,25 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 
 	for(int iter = 0; iter < N; iter++){
 		//write inpput tensor to buffer
-
 		Tensor * X = &(input[iter]);
 		xin.write(X->data[0][0]);
+		xin.sync(XCL_BO_SYNC_BO_TO_DEVICE);       
+
+		auto run = krnl(xin, wbuf, bbuf, zout);    
+		run.wait();                                
 
 
-		//run and measure kernel execution time
-
-		auto run = krnl(xin, wbuf, bbuf, zout);    // start kernel with all 4 args
-		run.wait();                                // block until the IP is done
-
-
+		zout.sync(XCL_BO_SYNC_BO_FROM_DEVICE);     // DMA kernel output back to host before read
 		zout.read(avg.data[0][0]);
 
-
+		if(iter < 3){
+			const FLOAT * xi = X->data[0][0];
+			const FLOAT * z  = avg.data[0][0];
+			double zsum = 0.0;
+			for(int k = 0; k < 64; k++) zsum += z[k];
+			printf("[dbg] img %d: in[0..3]=%.4f %.4f %.4f %.4f | zout sum=%.4f  z[0..3]=%.4f %.4f %.4f %.4f\n",
+			       iter, xi[0],xi[1],xi[2],xi[3], zsum, z[0],z[1],z[2],z[3]);
+		}
 
 		Linear(&avg, lin->W, lin->B, &logits);
 		Softmax(&logits, &probs);

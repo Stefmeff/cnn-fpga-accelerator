@@ -46,6 +46,18 @@ void conv2d_core(
         int W
 );
 
+
+
+void conv2d_ws(
+        const act_t x[],
+        hls::stream<weight_t>& w,
+        const bias_t b[],
+        act_t z[],
+        int Cin, 
+        int Cout, 
+        int H, 
+        int W);
+
 /**
  * @brief Test-only synthesis top
  */

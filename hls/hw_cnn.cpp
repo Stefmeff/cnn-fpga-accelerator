@@ -102,12 +102,18 @@ static void stream_weights(const float* src, hls::stream<weight_t>& ws, int n) {
  */
 static void conv_layer(const act_t* x, const float* w, const bias_t* b,
                        act_t* z, int Cin, int Cout, int H, int W) {
+    int total_weights = Cout * Cin * 9; 
     #pragma HLS DATAFLOW
+    //#pragma HLS stable variable=x
+    //#pragma HLS stable variable=b
+    //#pragma HLS stable variable=z
+
     hls::stream<weight_t> weight_fifo;
-    #pragma HLS STREAM variable=weight_fifo depth=256
-    stream_weights(w, weight_fifo, Cout * Cin * 9);
-    conv2d_core(x, weight_fifo, b, z, Cin, Cout, H, W);
+    #pragma HLS STREAM variable=weight_fifo depth=256 
+    stream_weights(w, weight_fifo, total_weights);
+    conv2d_ws(x, weight_fifo, b, z, Cin, Cout, H, W);
 }
+
 
 static void maxpool_core(const act_t* in, act_t* out, int C, int H, int W) {
     int Ho = H >> 1, Wo = W >> 1;
@@ -126,6 +132,7 @@ static void maxpool_core(const act_t* in, act_t* out, int C, int H, int W) {
 }
 
 /**
+
 static void maxpool_core(const act_t* in, act_t* out, int Cin, int H, int W) {
     int Ho = H >> 1, Wo = W >> 1;
     
@@ -203,10 +210,10 @@ void convEngine(
 )
 {
 // HLS interface pragmas
-#pragma HLS INTERFACE m_axi port=xin bundle=gmem0 depth=3072
-#pragma HLS INTERFACE m_axi port=wbuf bundle=gmem1 depth=267696
-#pragma HLS INTERFACE m_axi port=bbuf bundle=gmem2 depth=688
-#pragma HLS INTERFACE m_axi port=zout bundle=gmem3 depth=64
+#pragma HLS INTERFACE m_axi port=xin offset=slave bundle=gmem0 depth=3072
+#pragma HLS INTERFACE m_axi port=wbuf offset=slave bundle=gmem1 depth=267696
+#pragma HLS INTERFACE m_axi port=bbuf offset=slave bundle=gmem2 depth=688
+#pragma HLS INTERFACE m_axi port=zout offset=slave bundle=gmem3 depth=64
 
 #pragma HLS INTERFACE s_axilite port=xin  bundle=control
 #pragma HLS INTERFACE s_axilite port=wbuf bundle=control
@@ -222,6 +229,7 @@ void convEngine(
 
     // Bias tile for the current layer (weights are streamed straight from DRAM)
     bias_t   bias_buf[BIAS_MAX];
+    //weight_t weight_buf[WEIGHTS_MAX];
 
     // Load the input image into buffer A
     load_dram<act_t>(xin, fmap_bufA, IMAGE_MAX);
@@ -230,6 +238,8 @@ void convEngine(
     act_t* nxt = fmap_bufB;   // scratch feature map
     int w_off = 0, b_off = 0;
     int out_size = IMAGE_MAX; // element count of the current feature map
+    int ping_pong_state = 0; 
+
 
     for (int L = 0; L < N_LAYERS; L++) {
         LayerParams lp = CNN_Layers[L];
