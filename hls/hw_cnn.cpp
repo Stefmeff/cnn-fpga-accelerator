@@ -112,7 +112,8 @@ static void conv_layer(const act_t* x, const fvec* w, const bias_t* b,
     #pragma HLS DATAFLOW
 
     hls::stream<wtile> weight_fifo;
-    #pragma HLS STREAM variable=weight_fifo depth=64
+    #pragma HLS STREAM variable=weight_fifo depth=32
+    #pragma HLS bind_storage variable=weight_fifo type=fifo impl=srl
     stream_weights(w, weight_fifo, total_words);
     conv2d_ws(x, weight_fifo, b, z, Cin, Cout, H, W);
 }
@@ -215,7 +216,7 @@ void convEngine(
 // HLS interface pragmas. wbuf is a 512-bit (COUT_TILE-float) port: 16 weights
 // per beat. depth is in fvec beats = 267696 / COUT_TILE = 16731.
 #pragma HLS INTERFACE m_axi port=xin offset=slave bundle=gmem0 depth=3072
-#pragma HLS INTERFACE m_axi port=wbuf offset=slave bundle=gmem1 depth=16731 max_read_burst_length=64 num_read_outstanding=8
+#pragma HLS INTERFACE m_axi port=wbuf offset=slave bundle=gmem1 depth=16731 max_read_burst_length=16 num_read_outstanding=2
 #pragma HLS INTERFACE m_axi port=bbuf offset=slave bundle=gmem2 depth=688
 #pragma HLS INTERFACE m_axi port=zout offset=slave bundle=gmem3 depth=64
 
