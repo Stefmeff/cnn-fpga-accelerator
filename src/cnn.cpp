@@ -109,12 +109,12 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 {
 #ifdef HLS
 	int w_total,b_total;
-	FLOAT * w_all = genSeqConvWeightsWS(&w_total);   // conv weights only
+	FLOAT * w_all = genSeqConvWeightsWS(&w_total);   
 	FLOAT * b_all = genSeqConvBias(&b_total);
 
-	CNN_layer_struct * lin = &layers[41];          // LINEAR layer (run in software)
+	CNN_layer_struct * lin = &layers[41];          
 
-	FLOAT zout[64];                                // 64 global-average-pool features
+	FLOAT zout[64];                                
 	Tensor avg(64, 1, 1);
 	Tensor logits(1, 1, 10);
 	Tensor probs(1, 1, 10);
@@ -122,9 +122,7 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 	for(int iter = 0; iter < N; iter++){
 		Tensor * X = &(input[iter]);
 
-
-		convEngine(X->data[0][0], w_all, b_all, zout);
-
+		convEngine(X->data[0][0], (const fvec*)w_all, b_all, zout);
 
 		memcpy(avg.data[0][0], zout, sizeof(FLOAT) * 64);
 		Linear(&avg, lin->W, lin->B, &logits);
@@ -169,7 +167,6 @@ void CNN::inference(Tensor * input, int N, uint8_t preds[])
 	bbuf.write(b_all);
 	wbuf.sync(XCL_BO_SYNC_BO_TO_DEVICE);           // DMA weights to device (Zynq non-coherent mem)
 	bbuf.sync(XCL_BO_SYNC_BO_TO_DEVICE);           // DMA biases  to device
-
 
 
 	CNN_layer_struct * lin = &layers[41];          

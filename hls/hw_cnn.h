@@ -19,18 +19,22 @@
 
 #define COUT_TILE 16
 
+struct fvec {
+    float v[COUT_TILE];
+};
+
 /**
  * @brief Kernel function for the CNN accelerator.
- * 
+ *
  * @param xin Input feature map (image 3x32x32)
- * @param wbuf weights 
+ * @param wbuf weights, packed as fvec in [oc0][ic][ky][kx][t] order
  * @param bbuf biases
- * @param zout Output feature map 
+ * @param zout Output feature map
  */
 void convEngine(
-    float *xin, 
-    float *wbuf, 
-    float *bbuf, 
+    float *xin,
+    const fvec *wbuf,
+    float *bbuf,
     float *zout
 );
 

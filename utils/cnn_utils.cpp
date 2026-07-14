@@ -268,14 +268,17 @@ FLOAT * CNN::genSeqConvWeightsWS(int * w_total)
 		if(Cout % T != 0)
 			printf("WARNING: layer %d Cout=%d not divisible by COUT_TILE=%d!\n",i,Cout,T);
 
+		// Packed-beat order: [oc0][ic][ky][kx][t]. The T (=COUT_TILE) lanes are
+		// innermost so 16 consecutive floats form one fvec beat carrying all
+		// output-channel lanes of a single kernel column (matches init_kernel).
 		for(int oc0 = 0; oc0 < Cout; oc0 += T)
 			for(int ic = 0; ic < Cin; ic++)
-				for(int t = 0; t < T; t++){
-					int oc = oc0 + t;
-					for(int ky = 0; ky < 3; ky++)
-						for(int kx = 0; kx < 3; kx++)
+				for(int ky = 0; ky < 3; ky++)
+					for(int kx = 0; kx < 3; kx++)
+						for(int t = 0; t < T; t++){
+							int oc = oc0 + t;
 							w_all[w_off++] = lay->W[oc].data[ic][ky][kx];
-				}
+						}
 	}
 	return w_all;
 }

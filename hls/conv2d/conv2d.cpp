@@ -9,12 +9,12 @@
 
 void conv2d_ws(
         const act_t x[],
-        hls::stream<weight_t>& w,
+        hls::stream<wtile>& w,
         const bias_t b[],
         act_t z[],
-        int Cin, 
-        int Cout, 
-        int H, 
+        int Cin,
+        int Cout,
+        int H,
         int W)
 {
     acc_t oacc[COUT_TILE][CONV_MAX_PIX];
@@ -31,13 +31,17 @@ void conv2d_ws(
             weight_t kernel[COUT_TILE][KSIZE][KSIZE];
             #pragma HLS ARRAY_PARTITION variable=kernel complete dim=0
 
-            init_kernel: for (int t = 0; t < COUT_TILE; t++) {
-                #pragma HLS LOOP_FLATTEN off
-                inti_kernel_y: for (int ky = 0; ky < KSIZE; ky++) {
-                    #pragma HLS LOOP_FLATTEN off
-                    inti_kernel_x: for (int kx = 0; kx < KSIZE; kx++) {
-                        #pragma HLS PIPELINE II=1
-                        kernel[t][ky][kx] = w.read();
+            // One FIFO word carries all COUT_TILE output-channel lanes for a
+            // single (ky,kx), so a whole kernel column loads in one read. This
+            // is KSIZE*KSIZE (=9) reads per (tile,ic) instead of the previous
+            // COUT_TILE*KSIZE*KSIZE (=144) — the group-3 load bottleneck.
+            init_kernel_y: for (int ky = 0; ky < KSIZE; ky++) {
+                init_kernel_x: for (int kx = 0; kx < KSIZE; kx++) {
+                    #pragma HLS PIPELINE II=1
+                    wtile col = w.read();
+                    for (int t = 0; t < COUT_TILE; t++) {
+                        #pragma HLS UNROLL
+                        kernel[t][ky][kx] = col.w[t];
                     }
                 }
             }
@@ -135,13 +139,9 @@ void conv2d_ws(
     }
 }
 
-
-
-
-
 void conv2d_core(
         const act_t x[],
-        hls::stream<weight_t>& w,
+        hls::stream<wtile>& w,
         const bias_t b[],
         act_t z[],
         int Cin,
@@ -187,9 +187,16 @@ void conv2d_hls(
     for (int i = 0; i < xn; i++)   x_buf[i] = (act_t)x[i];
     for (int i = 0; i < Cout; i++) b_buf[i] = (bias_t)b[i];
 
-    hls::stream<weight_t> w_fifo;
-    #pragma HLS STREAM variable=w_fifo depth=36864
-    for (int i = 0; i < wn; i++) w_fifo.write((weight_t)w[i]);
+    // Pack scalar weights ([oc0][ic][ky][kx][t] order) into COUT_TILE-wide words.
+    hls::stream<wtile> w_fifo;
+    #pragma HLS STREAM variable=w_fifo depth=4096
+    const int wwords = wn / COUT_TILE;
+    for (int i = 0; i < wwords; i++) {
+        wtile col;
+        for (int t = 0; t < COUT_TILE; t++)
+            col.w[t] = (weight_t)w[i * COUT_TILE + t];
+        w_fifo.write(col);
+    }
 
     //conv2d_core(x_buf, w_fifo, b_buf, z_buf, Cin, Cout, H, W);
 

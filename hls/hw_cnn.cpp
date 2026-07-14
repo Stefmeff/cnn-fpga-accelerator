@@ -72,22 +72,27 @@ static void store_dram(const T* src, float* dst, int n) {
 }
 
 /**
- * @brief Streams weights from DRAM to a fifo. 
- * Two elements per iteration, convert to weight_t.
- * 
- * @param src off-chip DRAM
- * @param ws FIFO stream for weights
- * @param n number of weights to stream
+ * @brief Streams packed weight words from DRAM to a FIFO.
+ * One 512-bit fvec beat (COUT_TILE weights) per cycle at II=1; each beat is
+ * cast to weight_t and forwarded as one wtile word. Because a beat already
+ * carries a full kernel column, the downstream init_kernel loads COUT_TILE
+ * lanes per read instead of one.
+ *
+ * @param src   off-chip DRAM, packed [oc0][ic][ky][kx][t]
+ * @param ws    FIFO stream for packed weights
+ * @param nwords number of fvec beats to stream (= n_weights / COUT_TILE)
  */
-static void stream_weights(const float* src, hls::stream<weight_t>& ws, int n) {
-    int pairs = n >> 1;
-    for (int i = 0; i < pairs; i++) {
-        #pragma HLS PIPELINE II=2
-        ws.write((weight_t)src[2*i]);
-        ws.write((weight_t)src[2*i + 1]);
+static void stream_weights(const fvec* src, hls::stream<wtile>& ws, int nwords) {
+    for (int i = 0; i < nwords; i++) {
+        #pragma HLS PIPELINE II=1
+        fvec beat = src[i];
+        wtile col;
+        for (int t = 0; t < COUT_TILE; t++) {
+            #pragma HLS UNROLL
+            col.w[t] = (weight_t)beat.v[t];
+        }
+        ws.write(col);
     }
-    if (n & 1)
-        ws.write((weight_t)src[n-1]);
 }
 
 /**
@@ -100,17 +105,15 @@ static void stream_weights(const float* src, hls::stream<weight_t>& ws, int n) {
  * @param Cin number of input channels
  * @param Cout number of output channels
  */
-static void conv_layer(const act_t* x, const float* w, const bias_t* b,
+static void conv_layer(const act_t* x, const fvec* w, const bias_t* b,
                        act_t* z, int Cin, int Cout, int H, int W) {
-    int total_weights = Cout * Cin * 9; 
+    // One packed beat per (oc0-tile, ic, ky, kx); each carries COUT_TILE lanes.
+    int total_words = (Cout / COUT_TILE) * Cin * 9;
     #pragma HLS DATAFLOW
-    //#pragma HLS stable variable=x
-    //#pragma HLS stable variable=b
-    //#pragma HLS stable variable=z
 
-    hls::stream<weight_t> weight_fifo;
-    #pragma HLS STREAM variable=weight_fifo depth=256 
-    stream_weights(w, weight_fifo, total_weights);
+    hls::stream<wtile> weight_fifo;
+    #pragma HLS STREAM variable=weight_fifo depth=64
+    stream_weights(w, weight_fifo, total_words);
     conv2d_ws(x, weight_fifo, b, z, Cin, Cout, H, W);
 }
 
@@ -204,14 +207,15 @@ static void avgpool_core(const act_t* in, act_t* out, int C, int H, int W) {
 
 void convEngine(
     float *xin,
-    float *wbuf,
+    const fvec *wbuf,
     float *bbuf,
     float *zout
 )
 {
-// HLS interface pragmas
+// HLS interface pragmas. wbuf is a 512-bit (COUT_TILE-float) port: 16 weights
+// per beat. depth is in fvec beats = 267696 / COUT_TILE = 16731.
 #pragma HLS INTERFACE m_axi port=xin offset=slave bundle=gmem0 depth=3072
-#pragma HLS INTERFACE m_axi port=wbuf offset=slave bundle=gmem1 depth=267696
+#pragma HLS INTERFACE m_axi port=wbuf offset=slave bundle=gmem1 depth=16731 max_read_burst_length=64 num_read_outstanding=8
 #pragma HLS INTERFACE m_axi port=bbuf offset=slave bundle=gmem2 depth=688
 #pragma HLS INTERFACE m_axi port=zout offset=slave bundle=gmem3 depth=64
 
@@ -246,8 +250,8 @@ void convEngine(
         switch (lp.type) {
 
         case CONV: {
-            //number of weights for this layer
-            int wn = lp.Cout * lp.Cin * 9;
+            //number of packed weight beats for this layer (COUT_TILE weights each)
+            int wn = (lp.Cout / COUT_TILE) * lp.Cin * 9;
 
             //load biases from DRAM
             load_dram<bias_t>(bbuf + b_off, bias_buf, lp.Cout);

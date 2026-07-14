@@ -23,6 +23,16 @@
 #endif
 
 /**
+ * @brief Internal packed weight word carried on the weight FIFO: the COUT_TILE
+ * output-channel lanes for one (ic,ky,kx). One FIFO read fills a full kernel
+ * column, so init_kernel needs KSIZE*KSIZE reads per (tile,ic) instead of
+ * COUT_TILE*KSIZE*KSIZE.
+ */
+struct wtile {
+    weight_t w[COUT_TILE];
+};
+
+/**
  * @brief Performs a 3x3 convolution operation on the input feature map, with 
  * stride 1 and 0 padding.
  * 
@@ -37,7 +47,7 @@
  */
 void conv2d_core(
         const act_t x[],
-        hls::stream<weight_t>& w,
+        hls::stream<wtile>& w,
         const bias_t b[],
         act_t z[],
         int Cin,
@@ -50,12 +60,12 @@ void conv2d_core(
 
 void conv2d_ws(
         const act_t x[],
-        hls::stream<weight_t>& w,
+        hls::stream<wtile>& w,
         const bias_t b[],
         act_t z[],
-        int Cin, 
-        int Cout, 
-        int H, 
+        int Cin,
+        int Cout,
+        int H,
         int W);
 
 /**
