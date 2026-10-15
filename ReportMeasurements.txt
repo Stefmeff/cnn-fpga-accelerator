@@ -1,5 +1,0 @@
-
-# Board Measurements:
-
-
-WS-approach => explain weight loading
